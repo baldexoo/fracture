@@ -15,7 +15,6 @@ import {
 } from "./hid.js";
 import { createOverlay } from "./overlay.js";
 import { createAudioRadar } from "./audio-radar.js";
-import { openToolWindow } from "./popout.js";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -31,8 +30,7 @@ const placeholder = document.getElementById("stagePlaceholder");
 const overlayApi = createOverlay();
 const radarApi = createAudioRadar();
 const radarInline = document.getElementById("radarInline");
-let overlayWin = null;
-let radarWin = null;
+const overlayInline = document.getElementById("overlayInline");
 let radarAudioWarned = false;
 const magnifier = document.getElementById("magnifier");
 const magCanvas = document.getElementById("magnifierCanvas");
@@ -387,56 +385,20 @@ function toggleColorTools() {
   els.colorTools.classList.toggle("hidden", !show);
 }
 
-function ensureOverlayWindow() {
-  if (overlayWin && !overlayWin.closed()) return overlayWin;
-  overlayWin = openToolWindow({
-    name: "fracture-detection-overlay",
-    title: "detection overlay",
-    width: 280,
-    height: 200,
-    canvasWidth: 280,
-    canvasHeight: 180,
-  });
-  if (!overlayWin) {
-    alert("Przeglądarka zablokowała okienko — pozwól na popupy dla tej strony.");
-  }
-  return overlayWin;
-}
-
 function toggleOverlay() {
-  if (cfg.visuals.detectionOverlay) {
-    ensureOverlayWindow();
-  } else if (overlayWin) {
-    overlayWin.close();
-    overlayWin = null;
+  if (overlayInline) {
+    overlayInline.style.display = cfg.visuals.detectionOverlay ? "block" : "none";
   }
 }
 
 function paintRadar() {
   const c = cfg.visuals.audioRadar;
   if (radarInline) radarApi.draw(radarInline, c);
-  if (radarWin && !radarWin.closed() && radarWin.canvas) {
-    radarApi.draw(radarWin.canvas, c);
-  }
-}
-
-function ensureRadarWindow() {
-  if (radarWin && !radarWin.closed()) return radarWin;
-  radarWin = openToolWindow({
-    name: "fracture-audio-radar",
-    title: "audio radar",
-    width: 280,
-    height: 180,
-    canvasWidth: 280,
-    canvasHeight: 160,
-  });
-  return radarWin;
 }
 
 function toggleRadar() {
   if (cfg.visuals.audioRadar.enabled) {
     if (radarInline) radarInline.style.display = "block";
-    ensureRadarWindow(); // optional popup; inline always works
     paintRadar();
     radarApi.resume();
     if (stream && !radarApi.getHasAudio() && !radarAudioWarned) {
@@ -445,12 +407,8 @@ function toggleRadar() {
         "Audio radar: brak ścieżki audio.\n\nShare ponownie → Entire screen → włącz „Also share system audio”.\n(Okno / karta gry zwykle nie dają system audio.)"
       );
     }
-  } else {
-    if (radarInline) radarInline.style.display = "none";
-    if (radarWin) {
-      radarWin.close();
-      radarWin = null;
-    }
+  } else if (radarInline) {
+    radarInline.style.display = "none";
   }
 }
 
@@ -654,9 +612,9 @@ async function bindShareStream(media) {
 
   if (cfg.visuals.audioRadar.enabled) {
     if (radarInline) radarInline.style.display = "block";
-    if (!radarWin || radarWin.closed()) ensureRadarWindow();
     paintRadar();
   }
+  toggleOverlay();
 
   vtracks[0]?.addEventListener("ended", () => {
     placeholder.classList.remove("hidden");
@@ -665,7 +623,6 @@ async function bindShareStream(media) {
   });
 
   ensureWorker();
-  if (cfg.visuals.detectionOverlay) toggleOverlay();
   if (!loopStarted) {
     loopStarted = true;
     loop();
@@ -952,8 +909,8 @@ function loop() {
 
     // overlay at half rate; radar via uiTick
     if ((frames & 1) === 0) {
-      if (cfg.visuals.detectionOverlay && overlayWin && !overlayWin.closed()) {
-        overlayApi.draw(overlayWin.canvas, canvas, lastTarget);
+      if (cfg.visuals.detectionOverlay && overlayInline) {
+        overlayApi.draw(overlayInline, canvas, lastTarget);
       }
     }
 
@@ -1017,6 +974,7 @@ function loop() {
 
 writeCfgToUi();
 ensureWorker();
+toggleOverlay();
 if (cfg.visuals.audioRadar.enabled && radarInline) {
   radarInline.style.display = "block";
 }
