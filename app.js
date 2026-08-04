@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=perf1";
+} from "./utils.js?v=track2";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -12,10 +12,10 @@ import {
   reconnectPaired,
   sendMove,
   sendClick,
-} from "./hid.js?v=perf1";
-import { createOverlay } from "./overlay.js?v=perf1";
-import { createAudioRadar } from "./audio-radar.js?v=perf1";
-import { openToolWindow } from "./popout.js?v=perf1";
+} from "./hid.js?v=track2";
+import { createOverlay } from "./overlay.js?v=track2";
+import { createAudioRadar } from "./audio-radar.js?v=track2";
+import { openToolWindow } from "./popout.js?v=track2";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -51,6 +51,8 @@ const detectCtx = detectCanvas.getContext("2d", {
 let lastStatusAt = 0;
 let lastOverlayAt = 0;
 let lastRadarAt = 0;
+let lastDetectAt = 0;
+let lastInferMs = 50;
 
 const hidDot = document.getElementById("hidDot");
 const hidStatus = document.getElementById("hidStatus");
@@ -800,7 +802,7 @@ function ensureWorker() {
   }
   workerKind = kind;
   aiReady = kind !== "ai";
-  worker = new Worker(kind === "ai" ? "./ai.worker.js?v=perf1" : "./color.worker.js?v=perf1");
+  worker = new Worker(kind === "ai" ? "./ai.worker.js?v=track2" : "./color.worker.js?v=perf1");
   worker.onmessage = (ev) => {
     const data = ev.data || {};
     if (data.type === "ready") {
@@ -837,41 +839,70 @@ function ensureWorker() {
     if (target) {
       missFrames = 0;
       tracking = true;
+      lastInferMs = ms != null ? ms : lastInferMs;
+
+      // lead by inference age — detection is of a past frame
+      const lead = Math.min(0.085, (lastInferMs + 8) / 1000);
+      let tx = target.x + velX * lead * 55;
+      let ty = target.y + velY * lead * 55;
 
       if (!smoothTarget) {
-        smoothTarget = { x: target.x, y: target.y };
+        smoothTarget = { x: tx, y: ty };
         velX = 0;
         velY = 0;
       } else {
-        const dx = target.x - smoothTarget.x;
-        const dy = target.y - smoothTarget.y;
+        const dx = tx - smoothTarget.x;
+        const dy = ty - smoothTarget.y;
         const dist = Math.hypot(dx, dy);
-        // snappier lock — old maxStep 28 + heavy smooth = visible delay
-        const maxStep = workerKind === "ai" ? 64 : 85;
-        let tx = target.x;
-        let ty = target.y;
-        if (dist > maxStep) {
-          const s = maxStep / dist;
-          tx = smoothTarget.x + dx * s;
-          ty = smoothTarget.y + dy * s;
-        }
-        const a =
-          workerKind === "ai"
-            ? dist < 8
-              ? 0.55
-              : 0.82
-            : mode === "track"
+        const conf = target.conf ?? 0.5;
+
+        // high-conf close: almost raw (accuracy). far/low: soft cap.
+        if (workerKind === "ai") {
+          if (conf >= 0.78 && dist < 90) {
+            // snap
+          } else {
+            const maxStep = conf >= 0.65 ? 120 : 70;
+            if (dist > maxStep) {
+              const s = maxStep / dist;
+              tx = smoothTarget.x + dx * s;
+              ty = smoothTarget.y + dy * s;
+            }
+          }
+          const a =
+            conf >= 0.8
+              ? dist < 12
+                ? 0.88
+                : 0.95
+              : dist < 10
+                ? 0.7
+                : 0.9;
+          const nx = smoothTarget.x * (1 - a) + tx * a;
+          const ny = smoothTarget.y * (1 - a) + ty * a;
+          velX = nx - smoothTarget.x;
+          velY = ny - smoothTarget.y;
+          smoothTarget = { x: nx, y: ny };
+        } else {
+          const maxStep = 85;
+          if (dist > maxStep) {
+            const s = maxStep / dist;
+            tx = smoothTarget.x + dx * s;
+            ty = smoothTarget.y + dy * s;
+          }
+          const a =
+            mode === "track"
               ? dist < 6
                 ? 0.14
                 : 0.28
               : 0.42;
-        const nx = smoothTarget.x * (1 - a) + tx * a;
-        const ny = smoothTarget.y * (1 - a) + ty * a;
-        velX = nx - smoothTarget.x;
-        velY = ny - smoothTarget.y;
-        smoothTarget = { x: nx, y: ny };
+          const nx = smoothTarget.x * (1 - a) + tx * a;
+          const ny = smoothTarget.y * (1 - a) + ty * a;
+          velX = nx - smoothTarget.x;
+          velY = ny - smoothTarget.y;
+          smoothTarget = { x: nx, y: ny };
+        }
       }
       lastTarget = smoothTarget;
+      lastDetectAt = performance.now();
       const now = performance.now();
       if (now - lastStatusAt > 80) {
         lastStatusAt = now;
@@ -885,9 +916,18 @@ function ensureWorker() {
       }
     } else {
       missFrames++;
-      const missLimit = workerKind === "ai" ? 2 : 12;
-      const dropAt = workerKind === "ai" ? 3 : 18;
-      if (missFrames <= missLimit && smoothTarget && workerKind !== "ai") {
+      const missLimit = workerKind === "ai" ? 3 : 12;
+      const dropAt = workerKind === "ai" ? 5 : 18;
+      // AI: coast on miss instead of instant drop (feels faster / less flicker)
+      if (missFrames <= missLimit && smoothTarget && workerKind === "ai") {
+        smoothTarget = {
+          x: smoothTarget.x + velX * 0.85,
+          y: smoothTarget.y + velY * 0.85,
+        };
+        velX *= 0.9;
+        velY *= 0.9;
+        lastTarget = smoothTarget;
+      } else if (missFrames <= missLimit && smoothTarget && workerKind !== "ai") {
         smoothTarget = {
           x: smoothTarget.x + velX * 0.55,
           y: smoothTarget.y + velY * 0.55,
@@ -902,7 +942,6 @@ function ensureWorker() {
         velX = velY = 0;
         targetStatus.textContent = warn || (matchCount ? `seek (${matchCount})` : "—");
       } else if (workerKind === "ai") {
-        lastTarget = null;
         targetStatus.textContent = matchCount ? `seek (${matchCount})` : "—";
       }
     }
@@ -975,16 +1014,17 @@ function loop() {
 
     const radius = fovRadiusPx(vw, vh);
 
-    // mild coast while inference in flight — hides ~1 frame of delay without thrash
+    // predict while waiting on GPU — scale by last infer time
     if (workerBusy && tracking && lastTarget && smoothTarget) {
       const sp = Math.hypot(velX, velY);
-      if (sp > 0.15 && sp < 18) {
+      if (sp > 0.2 && sp < 28) {
+        const k = Math.min(1.1, 0.55 + lastInferMs / 120);
         smoothTarget = {
-          x: smoothTarget.x + velX * 0.65,
-          y: smoothTarget.y + velY * 0.65,
+          x: smoothTarget.x + velX * k,
+          y: smoothTarget.y + velY * k,
         };
-        velX *= 0.92;
-        velY *= 0.92;
+        velX *= 0.94;
+        velY *= 0.94;
         lastTarget = smoothTarget;
       }
     }
@@ -1012,9 +1052,14 @@ function loop() {
       aiReady
     ) {
       workerBusy = true;
-      const cx = vw >> 1;
-      const cy = vh >> 1;
-      const side = Math.max(64, Math.min(vw, vh, radius * 2));
+      // bias crop toward lock so moving targets stay sharp in the 320 window
+      let cx = vw >> 1;
+      let cy = vh >> 1;
+      if (tracking && lastTarget) {
+        cx = ((cx * 0.4 + lastTarget.x * 0.6) | 0);
+        cy = ((cy * 0.4 + lastTarget.y * 0.6) | 0);
+      }
+      const side = Math.max(96, Math.min(vw, vh, radius * 2));
       const x0 = Math.max(0, Math.min(vw - side, cx - (side >> 1)));
       const y0 = Math.max(0, Math.min(vh - side, cy - (side >> 1)));
       detectCtx.drawImage(video, x0, y0, side, side, 0, 0, DETECT_SZ, DETECT_SZ);

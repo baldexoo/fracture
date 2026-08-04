@@ -15,7 +15,8 @@ const IMGSZ = 320;
 const HEAD = new Set([1, 3]); // CT_head, T_head
 const FILL = 114 / 255;
 const NMS_IOU = 0.45;
-const CONF_MIN = 0.5;
+const CONF_MIN = 0.42;
+const CONF_LOCK = 0.32; // once sticky, keep tracking weaker dets
 
 let session = null;
 let ready = false;
@@ -196,10 +197,14 @@ function aimPoint(b, wantHead) {
   const x = (b.x1 + b.x2) * 0.5;
   let y;
   if (wantHead) {
-    const useHead = b.head && !tall;
-    y = useHead ? (b.y1 + b.y2) * 0.5 : b.y1 + b.h * 0.12;
+    if (b.head && !tall) {
+      // upper-chest of head box ≈ forehead/eyes, not geometric center
+      y = b.y1 + b.h * 0.38;
+    } else {
+      y = b.y1 + b.h * 0.1;
+    }
   } else {
-    y = b.head ? b.y1 + b.h * 0.85 : b.y1 + b.h * 0.38;
+    y = b.head ? b.y1 + b.h * 0.85 : b.y1 + b.h * 0.36;
   }
   return { x, y, conf: b.conf, cls: b.cls, head: wantHead && b.head && !tall };
 }
@@ -208,7 +213,7 @@ function pickTarget(boxes, cx, cy, bone) {
   if (!boxes.length) {
     if (lock) {
       lock.miss = (lock.miss || 0) + 1;
-      if (lock.miss > 3) lock = null;
+      if (lock.miss > 2) lock = null;
     }
     return null;
   }
@@ -225,7 +230,7 @@ function pickTarget(boxes, cx, cy, bone) {
     } else {
       pool = [];
       for (const b of bodies) {
-        if (!heads.some((h) => iou(h, b) > 0.15)) pool.push(b);
+        if (!heads.some((h) => iou(h, b) > 0.12)) pool.push(b);
       }
       if (!pool.length) pool = bodies.length ? bodies : boxes;
     }
@@ -233,7 +238,8 @@ function pickTarget(boxes, cx, cy, bone) {
     pool = bodies.length ? bodies : heads;
   }
 
-  const stickR = lock ? 72 : 0;
+  // lighter sticky — old 72px stuck on ghosts and felt laggy
+  const stickR = lock ? 48 : 0;
   const stickR2 = stickR * stickR;
 
   let best = null;
@@ -241,14 +247,14 @@ function pickTarget(boxes, cx, cy, bone) {
   for (const b of pool) {
     const p = aimPoint(b, wantHead);
     const dCross = (p.x - cx) * (p.x - cx) + (p.y - cy) * (p.y - cy);
-    let score = dCross / (0.35 + b.conf);
+    let score = dCross / (0.25 + b.conf * b.conf);
 
     if (lock && stickR2 > 0) {
       const dLock = (p.x - lock.x) * (p.x - lock.x) + (p.y - lock.y) * (p.y - lock.y);
-      if (dLock <= stickR2) score *= 0.35;
-      else if (dLock > stickR2 * 4 && b.conf < 0.7) score *= 2.2;
+      if (dLock <= stickR2) score *= 0.45;
+      else if (dLock > stickR2 * 5 && b.conf < 0.65) score *= 1.8;
     }
-    if (wantHead && p.head) score *= 0.75;
+    if (wantHead && p.head) score *= 0.65;
     if (score < bestScore) {
       bestScore = score;
       best = p;
@@ -259,9 +265,10 @@ function pickTarget(boxes, cx, cy, bone) {
 
   if (lock) {
     const jump = Math.hypot(best.x - lock.x, best.y - lock.y);
-    if (jump > 90 && best.conf < 0.72) {
+    // only hold old lock for tiny low-conf flickers
+    if (jump > 110 && best.conf < 0.55) {
       lock.miss = (lock.miss || 0) + 1;
-      if (lock.miss <= 2) {
+      if (lock.miss <= 1) {
         return { x: lock.x, y: lock.y, conf: lock.conf, cls: lock.cls, sticky: true };
       }
     }
@@ -296,7 +303,10 @@ self.onmessage = async (ev) => {
   try {
     const { imageData, width, height, ox, oy, fullW, fullH, cfg, mapScale } = msg;
     const tol = cfg?.tolerance ?? 10;
-    const confTh = Math.max(CONF_MIN, Math.min(0.65, 0.5 - tol * 0.003));
+    const locked = !!lock;
+    const confTh = locked
+      ? Math.max(CONF_LOCK, 0.38 - tol * 0.003)
+      : Math.max(CONF_MIN, Math.min(0.6, 0.48 - tol * 0.003));
     const { tensor, scale, padX, padY } = letterbox(imageData, width, height);
     const input = new ort.Tensor("float32", tensor, [1, 3, IMGSZ, IMGSZ]);
     const results = await session.run({ [session.inputNames[0]]: input });
