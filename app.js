@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js";
+} from "./utils.js?v=hud2";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -12,10 +12,10 @@ import {
   reconnectPaired,
   sendMove,
   sendClick,
-} from "./hid.js";
-import { createOverlay } from "./overlay.js";
-import { createAudioRadar } from "./audio-radar.js";
-import { openToolWindow } from "./popout.js";
+} from "./hid.js?v=hud2";
+import { createOverlay } from "./overlay.js?v=hud2";
+import { createAudioRadar } from "./audio-radar.js?v=hud2";
+import { openToolWindow } from "./popout.js?v=hud2";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -401,20 +401,18 @@ function toggleColorTools() {
 async function toggleOverlay() {
   if (cfg.visuals.detectionOverlay) {
     if (overlayWin && !overlayWin.closed()) return overlayWin;
-    // must run in user-gesture turn (checkbox) — never after await share
-    overlayWin = await openToolWindow({
+    // sync open — must stay in the click turn (no await before this)
+    overlayWin = openToolWindow({
       name: "fracture-detection-overlay",
-      title: "detection",
-      width: 320,
-      height: 240,
-      canvasWidth: 320,
-      canvasHeight: 200,
+      page: "./overlay.html",
+      width: 340,
+      height: 260,
     });
     if (!overlayWin) {
       cfg.visuals.detectionOverlay = false;
       els.visOverlay.checked = false;
       saveConfig(cfg);
-      targetStatus.textContent = "overlay: pozwól na popupy / Document PiP";
+      targetStatus.textContent = "overlay: zablokowane popupy — Allow dla tej strony";
     }
     return overlayWin;
   }
@@ -428,8 +426,15 @@ async function toggleOverlay() {
 function paintRadar() {
   const c = cfg.visuals.audioRadar;
   if (radarInline) radarApi.draw(radarInline, c);
-  if (radarWin && !radarWin.closed() && radarWin.canvas) {
-    radarApi.draw(radarWin.canvas, c);
+  if (radarWin && !radarWin.closed()) {
+    if (!radarWin.canvas) {
+      try {
+        radarWin.canvas = radarWin.win.document.getElementById("view");
+      } catch {
+        /* ignore */
+      }
+    }
+    if (radarWin.canvas) radarApi.draw(radarWin.canvas, c);
   }
 }
 
@@ -437,14 +442,15 @@ async function toggleRadar() {
   if (cfg.visuals.audioRadar.enabled) {
     if (radarInline) radarInline.style.display = "block";
     if (!radarWin || radarWin.closed()) {
-      radarWin = await openToolWindow({
+      radarWin = openToolWindow({
         name: "fracture-audio-radar",
-        title: "radar",
-        width: 300,
-        height: 220,
-        canvasWidth: 300,
-        canvasHeight: 180,
+        page: "./radar.html",
+        width: 320,
+        height: 240,
       });
+      if (!radarWin) {
+        targetStatus.textContent = "radar: zablokowane popupy — Allow dla tej strony";
+      }
     }
     paintRadar();
     radarApi.resume();
@@ -961,7 +967,14 @@ function loop() {
     // overlay at half rate; radar via uiTick
     if ((frames & 1) === 0) {
       if (cfg.visuals.detectionOverlay && overlayWin && !overlayWin.closed()) {
-        overlayApi.draw(overlayWin.canvas, canvas, lastTarget);
+        if (!overlayWin.canvas) {
+          try {
+            overlayWin.canvas = overlayWin.win.document.getElementById("view");
+          } catch {
+            /* ignore */
+          }
+        }
+        if (overlayWin.canvas) overlayApi.draw(overlayWin.canvas, canvas, lastTarget);
       }
     }
 
