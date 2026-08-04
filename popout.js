@@ -1,8 +1,7 @@
 /**
- * Detached tool windows (overlay / radar).
- * Styled like a frameless HUD (dark + yellow rule). OS may still draw a thin
- * titlebar — websites cannot remove it; Document PiP is used when possible
- * (always-on-top, rounded, minimal chrome) for the first window.
+ * Detached tool windows. Open popup SYNCHRONOUSLY first (user-gesture),
+ * then optionally upgrade to Document PiP. Awaiting PiP before window.open
+ * burns the gesture and the fallback gets blocked — that was the bug.
  */
 const POS_KEY = "fracture.popout.pos.v1";
 
@@ -31,8 +30,19 @@ function savePos(name, win) {
   }
 }
 
+function ensureDoc(doc) {
+  if (doc.body && doc.head) return;
+  doc.open();
+  doc.write("<!doctype html><html><head></head><body></body></html>");
+  doc.close();
+}
+
 function fillHud(doc, { title, canvasId, cw, ch }) {
-  doc.title = title;
+  ensureDoc(doc);
+  doc.title = title || "";
+  while (doc.head.firstChild) doc.head.removeChild(doc.head.firstChild);
+  while (doc.body.firstChild) doc.body.removeChild(doc.body.firstChild);
+
   const style = doc.createElement("style");
   style.textContent = `
     * { box-sizing: border-box; }
@@ -47,127 +57,90 @@ function fillHud(doc, { title, canvasId, cw, ch }) {
       width: 100%; height: 100%;
       background: #1a1a1a;
     }
-    .cap {
-      flex: 0 0 28px; height: 28px;
-      background: #222;
-    }
-    .rule {
-      flex: 0 0 3px; height: 3px;
-      background: #e8c84a;
-    }
-    .stage {
-      flex: 1 1 auto; min-height: 0;
-      background: #000; position: relative;
-    }
-    canvas {
-      display: block; width: 100%; height: 100%;
-      background: #000;
-    }
+    .cap { flex: 0 0 28px; height: 28px; background: #222; }
+    .rule { flex: 0 0 3px; height: 3px; background: #e8c84a; }
+    .stage { flex: 1 1 auto; min-height: 0; background: #000; }
+    canvas { display: block; width: 100%; height: 100%; background: #000; }
   `;
   doc.head.appendChild(style);
   const hud = doc.createElement("div");
   hud.className = "hud";
-  hud.innerHTML = `<div class="cap"></div><div class="rule"></div><div class="stage"></div>`;
+  const cap = doc.createElement("div");
+  cap.className = "cap";
+  const rule = doc.createElement("div");
+  rule.className = "rule";
+  const stage = doc.createElement("div");
+  stage.className = "stage";
   const canvas = doc.createElement("canvas");
-  canvas.id = canvasId;
+  canvas.id = canvasId || "view";
   canvas.width = cw;
   canvas.height = ch;
-  hud.querySelector(".stage").appendChild(canvas);
+  stage.appendChild(canvas);
+  hud.appendChild(cap);
+  hud.appendChild(rule);
+  hud.appendChild(stage);
   doc.body.appendChild(hud);
   return canvas;
 }
 
 function wrap(win, canvas, name) {
-  let timer = null;
-  const tick = () => {
-    savePos(name, win);
-    if (!win || win.closed) {
-      if (timer) clearInterval(timer);
+  let alive = win;
+  const timer = setInterval(() => {
+    if (!alive || alive.closed) {
+      clearInterval(timer);
       return;
     }
-  };
-  timer = setInterval(tick, 400);
+    savePos(name, alive);
+  }, 400);
   try {
-    win.addEventListener("pagehide", () => savePos(name, win));
+    alive.addEventListener("pagehide", () => savePos(name, alive));
   } catch {
     /* ignore */
   }
   return {
-    win,
+    win: alive,
     canvas,
     kind: "popup",
     closed() {
-      return !win || win.closed;
+      return !alive || alive.closed;
     },
     close() {
-      savePos(name, win);
-      if (timer) clearInterval(timer);
+      savePos(name, alive);
+      clearInterval(timer);
       try {
-        if (win && !win.closed) win.close();
+        if (alive && !alive.closed) alive.close();
       } catch {
         /* ignore */
       }
-      win = null;
+      alive = null;
     },
   };
 }
 
-let pipHolder = null; // only one Document PiP allowed by Chrome
-
-async function openViaPip({ name, title, width, height, canvasId, cw, ch }) {
-  if (!window.documentPictureInPicture?.requestWindow) return null;
-  // Chrome: one document PiP at a time
-  if (pipHolder && !pipHolder.closed()) {
-    if (pipHolder._name === name) return pipHolder;
-    return null;
-  }
-  const pos = loadPos(name);
-  const w = Math.max(160, (pos?.w || width) | 0);
-  const h = Math.max(120, (pos?.h || height) | 0);
-  const win = await documentPictureInPicture.requestWindow({
-    width: w,
-    height: h,
-    disallowReturnToOpener: true,
-    preferInitialWindowPlacement: false, // reuse last PiP place
-  });
-  const canvas = fillHud(win.document, { title, canvasId, cw, ch });
-  const api = wrap(win, canvas, name);
-  api.kind = "pip";
-  api._name = name;
-  pipHolder = api;
-  win.addEventListener("pagehide", () => {
-    if (pipHolder === api) pipHolder = null;
-  });
-  return api;
-}
+let pipHolder = null;
 
 function openViaPopup({ name, title, width, height, canvasId, cw, ch }) {
   const pos = loadPos(name);
-  const w = Math.max(160, (pos?.w || width) | 0);
-  const h = Math.max(120, (pos?.h || height) | 0);
-  const left = pos?.x != null ? pos.x | 0 : 80;
-  const top = pos?.y != null ? pos.y | 0 : 80;
+  const w = Math.max(180, (pos?.w || width) | 0);
+  const h = Math.max(140, (pos?.h || height) | 0);
+  const left = pos?.x != null ? pos.x | 0 : Math.max(40, (screen.availWidth - w) >> 2);
+  const top = pos?.y != null ? pos.y | 0 : Math.max(40, (screen.availHeight - h) >> 2);
   const features = [
     "popup=yes",
     `width=${w}`,
     `height=${h}`,
     `left=${left}`,
     `top=${top}`,
-    "toolbar=no",
-    "location=no",
-    "status=no",
-    "menubar=no",
-    "scrollbars=no",
   ].join(",");
 
-  let win = window.open("about:blank", name, features);
+  const win = window.open("about:blank", name, features);
   if (!win) return null;
   try {
     try {
       win.resizeTo(w, h);
       win.moveTo(left, top);
     } catch {
-      /* some browsers block move */
+      /* ignore */
     }
     const canvas = fillHud(win.document, { title, canvasId, cw, ch });
     try {
@@ -187,19 +160,45 @@ function openViaPopup({ name, title, width, height, canvasId, cw, ch }) {
   }
 }
 
-/**
- * Must be called from a direct user gesture (checkbox click), not after await.
- * Prefers Document PiP (looks like the HUD screenshot); falls back to popup.
- */
+async function tryUpgradePip(popup, { name, title, width, height, canvasId, cw, ch }) {
+  if (!window.documentPictureInPicture?.requestWindow) return popup;
+  if (pipHolder && !pipHolder.closed() && pipHolder._name !== name) return popup;
+
+  try {
+    const pos = loadPos(name);
+    const w = Math.max(160, (pos?.w || width) | 0);
+    const h = Math.max(120, (pos?.h || height) | 0);
+    const win = await documentPictureInPicture.requestWindow({
+      width: w,
+      height: h,
+      disallowReturnToOpener: true,
+    });
+    const canvas = fillHud(win.document, { title, canvasId, cw, ch });
+    if (popup) popup.close();
+    const api = wrap(win, canvas, name);
+    api.kind = "pip";
+    api._name = name;
+    pipHolder = api;
+    win.addEventListener("pagehide", () => {
+      if (pipHolder === api) pipHolder = null;
+    });
+    return api;
+  } catch (e) {
+    console.warn("pip upgrade skipped", e);
+    return popup;
+  }
+}
+
+/** Call from checkbox click — opens popup in the same turn, then may upgrade to PiP. */
 export async function openToolWindow(opts) {
   const cw = opts.canvasWidth || opts.width;
   const ch = opts.canvasHeight || opts.height;
   const args = { ...opts, cw, ch };
-  try {
-    const pip = await openViaPip(args);
-    if (pip) return pip;
-  } catch (e) {
-    console.warn("pip failed", e);
-  }
-  return openViaPopup(args);
+
+  // 1) sync — keeps user gesture for the popup blocker
+  const popup = openViaPopup(args);
+  if (!popup) return null;
+
+  // 2) optional PiP upgrade (always-on-top / less chrome)
+  return tryUpgradePip(popup, args);
 }

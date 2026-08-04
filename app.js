@@ -240,6 +240,17 @@ els.visRadar.addEventListener("change", () => {
   readUiToCfg();
   void toggleRadar();
 });
+
+document.getElementById("overlayPopBtn")?.addEventListener("click", () => {
+  els.visOverlay.checked = true;
+  readUiToCfg();
+  void toggleOverlay();
+});
+document.getElementById("radarPopBtn")?.addEventListener("click", () => {
+  els.visRadar.checked = true;
+  readUiToCfg();
+  void toggleRadar();
+});
 els.radarDistance.addEventListener("input", () => {
   readUiToCfg();
   syncSlider(els.radarDistance);
