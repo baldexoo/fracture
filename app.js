@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=track4";
+} from "./utils.js?v=audio2";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -12,10 +12,10 @@ import {
   reconnectPaired,
   sendMove,
   sendClick,
-} from "./hid.js?v=track4";
-import { createOverlay } from "./overlay.js?v=track4";
-import { createAudioRadar } from "./audio-radar.js?v=track4";
-import { openToolWindow } from "./popout.js?v=track4";
+} from "./hid.js?v=audio2";
+import { createOverlay } from "./overlay.js?v=audio2";
+import { createAudioRadar } from "./audio-radar.js?v=audio2";
+import { openToolWindow } from "./popout.js?v=audio2";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -626,11 +626,70 @@ function isCancel(e) {
 
 function isAudioStartError(e) {
   const msg = String(e?.message || e || "");
-  return (
-    /could not start audio source/i.test(msg) ||
-    e?.name === "NotReadableError" ||
-    e?.name === "TrackStartError"
-  );
+  if (/could not start audio source/i.test(msg)) return true;
+  if (e?.name === "NotReadableError" && /audio/i.test(msg)) return true;
+  if (e?.name === "TrackStartError" && /audio/i.test(msg)) return true;
+  // Chrome sometimes throws bare NotReadableError when share-audio checkbox is on
+  if (e?.name === "NotReadableError" && /start/i.test(msg)) return true;
+  return false;
+}
+
+/** Mic permission unlocks Chrome system-audio capture on many Windows setups. */
+async function ensureMicPermission() {
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({
+      audio: true,
+      video: false,
+    });
+    for (const t of s.getTracks()) t.stop();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function displayMediaOpts(wantAudio) {
+  const opts = {
+    video: { frameRate: { ideal: 60 } },
+    selfBrowserSurface: "exclude",
+    preferCurrentTab: false,
+  };
+  if (!wantAudio) {
+    opts.audio = false;
+    return opts;
+  }
+  opts.audio = true;
+  // Chromium hints (ignored if unsupported)
+  try {
+    opts.systemAudio = "include";
+  } catch {
+    /* ignore */
+  }
+  try {
+    opts.windowAudio = "system";
+  } catch {
+    /* ignore */
+  }
+  return opts;
+}
+
+async function requestDisplayStream() {
+  // 1) try with audio
+  try {
+    return {
+      media: await navigator.mediaDevices.getDisplayMedia(displayMediaOpts(true)),
+      audioAttempt: true,
+    };
+  } catch (e) {
+    if (isCancel(e)) throw e;
+    if (!isAudioStartError(e)) throw e;
+  }
+  // 2) same click turn: video-only so share still works
+  return {
+    media: await navigator.mediaDevices.getDisplayMedia(displayMediaOpts(false)),
+    audioAttempt: false,
+    audioFailed: true,
+  };
 }
 
 function setAudioUi(ok, label) {
@@ -640,8 +699,9 @@ function setAudioUi(ok, label) {
   if (hint) {
     hint.style.color = ok ? "#6a6" : "#666";
     if (ok) {
-      hint.textContent =
-        "audio z share OK — puls z przechwyconego dźwięku (okno CS2 / ekran). suwaki = kierunek igły.";
+      hint.innerHTML =
+        "audio OK — radar pulsuje z share. " +
+        "suwaki = kierunek igły (nie direction-finding z mic).";
     }
   }
   paintRadar();
@@ -659,28 +719,43 @@ function stopCurrentStream() {
   stream = null;
 }
 
-async function bindShareStream(media) {
+async function bindShareStream(media, meta = {}) {
   stopCurrentStream();
   stream = media;
 
   const vtracks = stream.getVideoTracks();
+  if (!vtracks.length) throw new Error("Brak ścieżki video z share.");
+
   video.srcObject = new MediaStream(vtracks);
   video.muted = true;
   await video.play();
   placeholder.classList.add("hidden");
 
-  // Surface info — window vs monitor (CS2 window audio ≠ mic)
   const vset = vtracks[0]?.getSettings?.() || {};
   const surface = vset.displaySurface || "?";
   const atracks = stream.getAudioTracks();
   console.info("[share]", {
     surface,
+    audioFailed: !!meta.audioFailed,
     audioTracks: atracks.map((t) => ({
       label: t.label,
       state: t.readyState,
       muted: t.muted,
+      enabled: t.enabled,
     })),
   });
+
+  for (const t of atracks) {
+    t.enabled = true;
+    t.addEventListener("ended", () => {
+      setAudioUi(false);
+      const hint = document.getElementById("radarHint");
+      if (hint) {
+        hint.style.color = "#c66";
+        hint.textContent = "audio track ended — share ponownie z dźwiękiem.";
+      }
+    });
+  }
 
   let ok = false;
   try {
@@ -690,15 +765,26 @@ async function bindShareStream(media) {
   }
 
   if (ok) {
-    setAudioUi(true, surface === "window" ? "cs2?" : "sys");
+    setAudioUi(true, surface === "window" ? "window" : surface === "monitor" ? "system" : "live");
   } else {
     setAudioUi(false);
     const hint = document.getElementById("radarHint");
     if (hint) {
       hint.style.color = "#c66";
-      hint.innerHTML =
-        "brak ścieżki audio z share. zrób share ponownie → <b>Okno</b> → CS2 → włącz dźwięk okna. " +
-        "nie używamy mikrofonu / Discord.";
+      if (meta.audioFailed) {
+        hint.innerHTML =
+          "Windows/Chrome nie uruchomił audio (często headset surround / exclusive mode). " +
+          "Share obrazu OK. Spróbuj: <b>Cały ekran</b> + „Share system audio”, stereo 48 kHz, " +
+          "albo ustawienia Chrome → mikrofon Allow dla tej strony.";
+      } else if (!atracks.length) {
+        hint.innerHTML =
+          "Udostępniłeś obraz <b>bez</b> dźwięku. Share ponownie → zaznacz " +
+          "<b>Also share system audio / Udostępnij dźwięk</b> " +
+          "(najpewniej: zakładka <b>Cały ekran</b>, nie samo okno).";
+      } else {
+        hint.innerHTML =
+          "Jest track audio, ale attach się wywalił — kliknij panel (AudioContext) i share jeszcze raz.";
+      }
     }
   }
 
@@ -706,7 +792,6 @@ async function bindShareStream(media) {
     if (radarInline) radarInline.style.display = "block";
     paintRadar();
   }
-  // nie otwieraj okienek tu — po await share nie ma user-gesture (blocker)
 
   vtracks[0]?.addEventListener("ended", () => {
     placeholder.classList.remove("hidden");
@@ -725,38 +810,20 @@ document.getElementById("shareBtn").addEventListener("click", async () => {
   try {
     radarAudioWarned = false;
     await radarApi.warm();
+    // Chrome often needs mic permission before system-audio capture works
+    await ensureMicPermission();
+    await radarApi.warm();
 
-    // DOKŁADNIE jeden picker — bez fallback getDisplayMedia (to była pętla „udostępnij znowu”).
-    // audio:true pokazuje toggle; jeśli OS nie da ścieżki, i tak dostajesz video (albo pusty audio).
-    let media;
-    try {
-      media = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: 60 } },
-        audio: true,
-        selfBrowserSurface: "exclude",
-      });
-    } catch (e) {
-      if (isCancel(e)) return;
-      // Nie otwieraj drugiego pickera. Przy błędzie audio-start użytkownik musi
-      // odznaczyć dźwięk SAM w tym samym dialogu / spróbować później.
-      if (isAudioStartError(e)) {
-        const hint = document.getElementById("radarHint");
-        if (hint) {
-          hint.style.color = "#c66";
-          hint.innerHTML =
-            "Windows odrzucił audio share. W dialogu odznacz dźwięk i udostępnij sam obraz — " +
-            "albo zamknij OBS/overlay i spróbuj <b>raz</b> z oknem CS2 + dźwięk. " +
-            "<b>Nie ma drugiego okna share z kodu.</b>";
-        }
-        return;
-      }
-      throw e;
-    }
-
-    await bindShareStream(media);
+    const { media, audioFailed } = await requestDisplayStream();
+    await bindShareStream(media, { audioFailed });
   } catch (e) {
     if (isCancel(e)) return;
-    if (isAudioStartError(e)) return;
+    console.warn("share failed", e);
+    const hint = document.getElementById("radarHint");
+    if (hint) {
+      hint.style.color = "#c66";
+      hint.textContent = `share error: ${e?.message || e}`;
+    }
     alert(e?.message || String(e));
   }
 });

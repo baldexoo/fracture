@@ -21,6 +21,7 @@ export function createAudioRadar() {
         /* ignore */
       }
     }
+    return audioCtx.state;
   }
 
   async function attachStream(stream) {
@@ -36,39 +37,48 @@ export function createAudioRadar() {
     data = null;
     timeData = null;
 
-    const tracks = (stream?.getAudioTracks?.() || []).filter(
-      (t) => t.readyState === "live"
-    );
+    const tracks = stream?.getAudioTracks?.() || [];
     if (!tracks.length) {
       hasAudio = false;
-      status = "no audio — share okno CS2 + dźwięk";
+      status = "no audio — zaznacz share audio";
       return false;
     }
+
     for (const t of tracks) {
-      t.enabled = true;
+      try {
+        t.enabled = true;
+      } catch {
+        /* ignore */
+      }
     }
+
+    // wait briefly if track is still starting
+    const live = tracks.filter((t) => t.readyState === "live");
+    const use = live.length ? live : tracks;
 
     try {
       await warm();
-      // osobny stream tylko z audio — omija bugi createMediaStreamSource
-      const audioOnly = new MediaStream(tracks);
+      const audioOnly = new MediaStream(use);
       sourceNode = audioCtx.createMediaStreamSource(audioOnly);
       analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 512;
-      analyser.smoothingTimeConstant = 0.7;
+      analyser.fftSize = 1024;
+      analyser.smoothingTimeConstant = 0.55;
+      // keep graph alive (some browsers GC silent graphs)
+      const gain = audioCtx.createGain();
+      gain.gain.value = 0;
       sourceNode.connect(analyser);
+      analyser.connect(gain);
+      gain.connect(audioCtx.destination);
+
       data = new Uint8Array(analyser.frequencyBinCount);
       timeData = new Uint8Array(analyser.fftSize);
       hasAudio = true;
-      status =
-        audioCtx.state === "running"
-          ? "audio live"
-          : "audio suspended — kliknij panel";
+      status = audioCtx.state === "running" ? "audio live" : "kliknij panel (resume)";
       return true;
     } catch (e) {
       console.warn("audio attach failed", e);
       hasAudio = false;
-      status = "audio attach failed — share ponownie z dźwiękiem okna";
+      status = "attach failed — share z audio jeszcze raz";
       return false;
     }
   }
@@ -82,10 +92,7 @@ export function createAudioRadar() {
       }
       sourceNode = null;
     }
-    if (audioCtx) {
-      audioCtx.close().catch(() => {});
-      audioCtx = null;
-    }
+    // keep AudioContext warm across re-shares (closing forces gesture again)
     analyser = null;
     data = null;
     timeData = null;
@@ -101,7 +108,18 @@ export function createAudioRadar() {
       const v = (timeData[i] - 128) / 128;
       sum += v * v;
     }
-    return Math.min(1, Math.sqrt(sum / timeData.length) * 4);
+    // also peek spectrum — game SFX often quiet in time domain after mix
+    let peak = Math.sqrt(sum / timeData.length);
+    if (data) {
+      analyser.getByteFrequencyData(data);
+      let s = 0;
+      // skip very low bins (rumble) — focus footsteps/gun range-ish
+      const n = data.length;
+      for (let i = (n * 0.05) | 0; i < (n * 0.45) | 0; i++) s += data[i];
+      const spec = s / ((n * 0.4) * 255);
+      peak = Math.max(peak, spec);
+    }
+    return Math.min(1, peak * 5);
   }
 
   function draw(canvas, cfg) {
@@ -143,7 +161,7 @@ export function createAudioRadar() {
     let mag = 0.2 + distSlider * 0.55;
     if (hasAudio) {
       const lvl = level();
-      mag = Math.min(1, mag * 0.45 + lvl * 0.9);
+      mag = Math.min(1, mag * 0.35 + lvl * 0.95);
       if (data) {
         analyser.getByteFrequencyData(data);
         ctx.fillStyle = "rgba(255,255,255,0.15)";
