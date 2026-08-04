@@ -198,9 +198,12 @@ function aimPoint(b, wantHead) {
   let y;
   if (wantHead) {
     y = b.head && !tall ? b.y1 + b.h * 0.42 : b.y1 + b.h * 0.08;
+  } else if (b.head && !tall) {
+    // only head box available — estimate torso center below head
+    y = b.y1 + b.h * 2.1;
   } else {
-    // torso; if only head box exists, aim below it
-    y = b.head && !tall ? b.y1 + b.h * 1.65 : b.y1 + b.h * 0.35;
+    // body box → exact geometric center of torso
+    y = (b.y1 + b.y2) * 0.5;
   }
   return { x, y, conf: b.conf, cls: b.cls, head: wantHead && b.head && !tall };
 }
@@ -235,11 +238,7 @@ function pickTarget(boxes, cx, cy, bone) {
   let bestScore = Infinity;
   for (const b of pool) {
     const p = aimPoint(b, wantHead);
-    // body mode + head-only fallback: aim chest under head
-    if (!wantHead && b.head) {
-      p.y = b.y1 + b.h * 2.2;
-      p.head = false;
-    }
+    // body mode + head-only fallback already handled in aimPoint
     const dCross = (p.x - cx) * (p.x - cx) + (p.y - cy) * (p.y - cy);
     let score = dCross / (0.3 + b.conf);
 

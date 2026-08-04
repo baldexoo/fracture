@@ -818,7 +818,7 @@ function ensureWorker() {
   }
   workerKind = kind;
   aiReady = kind !== "ai";
-  worker = new Worker(kind === "ai" ? "./ai.worker.js?v=track4" : "./color.worker.js?v=perf1");
+  worker = new Worker(kind === "ai" ? "./ai.worker.js?v=body1" : "./color.worker.js?v=perf1");
   worker.onmessage = (ev) => {
     const data = ev.data || {};
     if (data.type === "ready") {
