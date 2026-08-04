@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=track3";
+} from "./utils.js?v=track4";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -12,10 +12,10 @@ import {
   reconnectPaired,
   sendMove,
   sendClick,
-} from "./hid.js?v=track3";
-import { createOverlay } from "./overlay.js?v=track3";
-import { createAudioRadar } from "./audio-radar.js?v=track3";
-import { openToolWindow } from "./popout.js?v=track3";
+} from "./hid.js?v=track4";
+import { createOverlay } from "./overlay.js?v=track4";
+import { createAudioRadar } from "./audio-radar.js?v=track4";
+import { openToolWindow } from "./popout.js?v=track4";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -53,6 +53,11 @@ let lastOverlayAt = 0;
 let lastRadarAt = 0;
 let lastDetectAt = 0;
 let lastInferMs = 50;
+let detectSentAt = 0;
+let rawPrev = null; // last raw detection {x,y,t}
+let trackVx = 0; // px/s from raw dets only (not from smoothed line)
+let trackVy = 0;
+let loopPrevT = performance.now();
 
 const hidDot = document.getElementById("hidDot");
 const hidStatus = document.getElementById("hidStatus");
@@ -253,6 +258,8 @@ els.aimBone.addEventListener("change", () => {
   smoothTarget = null;
   lastTarget = null;
   velX = velY = 0;
+  trackVx = trackVy = 0;
+  rawPrev = null;
   tracking = false;
   if (worker && workerKind === "ai") worker.postMessage({ type: "reset" });
 });
@@ -811,7 +818,7 @@ function ensureWorker() {
   }
   workerKind = kind;
   aiReady = kind !== "ai";
-  worker = new Worker(kind === "ai" ? "./ai.worker.js?v=track3" : "./color.worker.js?v=perf1");
+  worker = new Worker(kind === "ai" ? "./ai.worker.js?v=track4" : "./color.worker.js?v=perf1");
   worker.onmessage = (ev) => {
     const data = ev.data || {};
     if (data.type === "ready") {
@@ -849,11 +856,51 @@ function ensureWorker() {
       missFrames = 0;
       tracking = true;
       lastInferMs = ms != null ? ms : lastInferMs;
+      const now = performance.now();
 
-      const tx = target.x;
-      const ty = target.y;
+      let tx = target.x;
+      let ty = target.y;
 
-      if (!smoothTarget) {
+      if (workerKind === "ai") {
+        // velocity from RAW detections only — never from smoothed line (that orbited)
+        if (rawPrev && now - rawPrev.t > 10 && now - rawPrev.t < 400) {
+          const jump = Math.hypot(target.x - rawPrev.x, target.y - rawPrev.y);
+          if (jump > 120) {
+            trackVx = 0;
+            trackVy = 0;
+          } else {
+            const dt = (now - rawPrev.t) / 1000;
+            const vx = (target.x - rawPrev.x) / dt;
+            const vy = (target.y - rawPrev.y) / dt;
+            trackVx = trackVx * 0.4 + vx * 0.6;
+            trackVy = trackVy * 0.4 + vy * 0.6;
+            const sp = Math.hypot(trackVx, trackVy);
+            if (sp > 1800) {
+              trackVx = (trackVx / sp) * 1800;
+              trackVy = (trackVy / sp) * 1800;
+            }
+          }
+        }
+        rawPrev = { x: target.x, y: target.y, t: now };
+
+        // lead = how late this box is (capture→now), capped so it can't overshoot hard
+        const ageSec = Math.min(0.095, Math.max(0.02, (now - detectSentAt) / 1000));
+        let lx = trackVx * ageSec;
+        let ly = trackVy * ageSec;
+        const lead = Math.hypot(lx, ly);
+        const maxLead = 22; // px — catch-up without flying past model
+        if (lead > maxLead) {
+          lx *= maxLead / lead;
+          ly *= maxLead / lead;
+        }
+        tx = target.x + lx;
+        ty = target.y + ly;
+
+        // AI line = led raw point (no laggy blend)
+        smoothTarget = { x: tx, y: ty };
+        velX = trackVx / 60;
+        velY = trackVy / 60;
+      } else if (!smoothTarget) {
         smoothTarget = { x: tx, y: ty };
         velX = 0;
         velY = 0;
@@ -861,52 +908,28 @@ function ensureWorker() {
         const dx = tx - smoothTarget.x;
         const dy = ty - smoothTarget.y;
         const dist = Math.hypot(dx, dy);
-        const conf = target.conf ?? 0.5;
-
-        // big jump = camera flick / new box — snap, don't blend (blend = circles)
-        if (workerKind === "ai" && (dist > 55 || conf >= 0.75)) {
-          velX = tx - smoothTarget.x;
-          velY = ty - smoothTarget.y;
-          // clamp vel so next-frame coast can't spiral
-          const sp = Math.hypot(velX, velY);
-          if (sp > 40) {
-            velX = (velX / sp) * 40;
-            velY = (velY / sp) * 40;
-          }
-          smoothTarget = { x: tx, y: ty };
-        } else if (workerKind === "ai") {
-          // light stick only — was over-smoothed + lead = orbit
-          const a = 0.92;
-          const nx = smoothTarget.x * (1 - a) + tx * a;
-          const ny = smoothTarget.y * (1 - a) + ty * a;
-          velX = nx - smoothTarget.x;
-          velY = ny - smoothTarget.y;
-          smoothTarget = { x: nx, y: ny };
-        } else {
-          const maxStep = 85;
-          let sx = tx;
-          let sy = ty;
-          if (dist > maxStep) {
-            const s = maxStep / dist;
-            sx = smoothTarget.x + dx * s;
-            sy = smoothTarget.y + dy * s;
-          }
-          const a =
-            mode === "track"
-              ? dist < 6
-                ? 0.14
-                : 0.28
-              : 0.42;
-          const nx = smoothTarget.x * (1 - a) + sx * a;
-          const ny = smoothTarget.y * (1 - a) + sy * a;
-          velX = nx - smoothTarget.x;
-          velY = ny - smoothTarget.y;
-          smoothTarget = { x: nx, y: ny };
+        const maxStep = 85;
+        let sx = tx;
+        let sy = ty;
+        if (dist > maxStep) {
+          const s = maxStep / dist;
+          sx = smoothTarget.x + dx * s;
+          sy = smoothTarget.y + dy * s;
         }
+        const a =
+          mode === "track"
+            ? dist < 6
+              ? 0.14
+              : 0.28
+            : 0.42;
+        const nx = smoothTarget.x * (1 - a) + sx * a;
+        const ny = smoothTarget.y * (1 - a) + sy * a;
+        velX = nx - smoothTarget.x;
+        velY = ny - smoothTarget.y;
+        smoothTarget = { x: nx, y: ny };
       }
       lastTarget = smoothTarget;
-      lastDetectAt = performance.now();
-      const now = performance.now();
+      lastDetectAt = now;
       if (now - lastStatusAt > 80) {
         lastStatusAt = now;
         const extra =
@@ -921,16 +944,17 @@ function ensureWorker() {
       missFrames++;
       const missLimit = workerKind === "ai" ? 2 : 12;
       const dropAt = workerKind === "ai" ? 4 : 18;
-      // brief hold last point — no velocity coast (that drew circles)
       if (missFrames <= missLimit && smoothTarget) {
         lastTarget = smoothTarget;
-        velX *= 0.5;
-        velY *= 0.5;
+        trackVx *= 0.7;
+        trackVy *= 0.7;
       } else if (missFrames > dropAt) {
         tracking = false;
         lastTarget = null;
         smoothTarget = null;
         velX = velY = 0;
+        trackVx = trackVy = 0;
+        rawPrev = null;
         targetStatus.textContent = warn || (matchCount ? `seek (${matchCount})` : "—");
       } else if (workerKind === "ai") {
         targetStatus.textContent = matchCount ? `seek (${matchCount})` : "—";
@@ -994,6 +1018,8 @@ function loop() {
   }
 
   const now = performance.now();
+  const dt = Math.min(0.05, Math.max(0.008, (now - loopPrevT) / 1000));
+  loopPrevT = now;
 
   if (ai) {
     // HUD canvas in video pixel space; video element is the live 60fps preview
@@ -1005,7 +1031,17 @@ function loop() {
 
     const radius = fovRadiusPx(vw, vh);
 
-    // no predictive coast — it orbited the target
+    // between inferences: nudge line with RAW track velocity (half-rate = no overshoot spiral)
+    if (workerBusy && lastTarget && (trackVx !== 0 || trackVy !== 0)) {
+      const sp = Math.hypot(trackVx, trackVy);
+      if (sp > 30 && sp < 1600) {
+        lastTarget = {
+          x: lastTarget.x + trackVx * dt * 0.45,
+          y: lastTarget.y + trackVy * dt * 0.45,
+        };
+        smoothTarget = lastTarget;
+      }
+    }
 
     if (cfg.aim.enabled) {
       ctx.strokeStyle = "rgba(255,255,255,0.35)";
@@ -1030,7 +1066,7 @@ function loop() {
       aiReady
     ) {
       workerBusy = true;
-      // always crop on crosshair (= FOV). biasing to lastTarget lost people on fast mouse flicks
+      detectSentAt = performance.now();
       const cx = vw >> 1;
       const cy = vh >> 1;
       const side = Math.max(96, Math.min(vw, vh, radius * 2));
