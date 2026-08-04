@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=hud2";
+} from "./utils.js?v=perf1";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -12,10 +12,10 @@ import {
   reconnectPaired,
   sendMove,
   sendClick,
-} from "./hid.js?v=hud2";
-import { createOverlay } from "./overlay.js?v=hud2";
-import { createAudioRadar } from "./audio-radar.js?v=hud2";
-import { openToolWindow } from "./popout.js?v=hud2";
+} from "./hid.js?v=perf1";
+import { createOverlay } from "./overlay.js?v=perf1";
+import { createAudioRadar } from "./audio-radar.js?v=perf1";
+import { openToolWindow } from "./popout.js?v=perf1";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -26,7 +26,7 @@ const session = getSession();
 
 const video = document.getElementById("screenVideo");
 const canvas = document.getElementById("screenCanvas");
-const ctx = canvas.getContext("2d", { willReadFrequently: true });
+const ctx = canvas.getContext("2d", { alpha: true, desynchronized: true });
 const placeholder = document.getElementById("stagePlaceholder");
 const overlayApi = createOverlay();
 const radarApi = createAudioRadar();
@@ -37,6 +37,20 @@ let radarAudioWarned = false;
 const magnifier = document.getElementById("magnifier");
 const magCanvas = document.getElementById("magnifierCanvas");
 const magCtx = magCanvas.getContext("2d");
+
+/** Fixed-size GPU downsample target for AI (avoids big getImageData). */
+const DETECT_SZ = 320;
+const detectCanvas = document.createElement("canvas");
+detectCanvas.width = DETECT_SZ;
+detectCanvas.height = DETECT_SZ;
+const detectCtx = detectCanvas.getContext("2d", {
+  willReadFrequently: true,
+  alpha: false,
+});
+
+let lastStatusAt = 0;
+let lastOverlayAt = 0;
+let lastRadarAt = 0;
 
 const hidDot = document.getElementById("hidDot");
 const hidStatus = document.getElementById("hidStatus");
@@ -273,6 +287,9 @@ function updateSwatch() {
 
 /** Sample a torso-sized patch around (cx,cy) on the share canvas → mean RGB + Lab list. */
 function samplePatchAt(cx, cy, radius = 14) {
+  if (workerKind === "ai" && video.videoWidth) {
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  }
   const x0 = clamp(cx - radius, 0, canvas.width - 1);
   const y0 = clamp(cy - radius, 0, canvas.height - 1);
   const x1 = clamp(cx + radius, 0, canvas.width - 1);
@@ -783,8 +800,8 @@ function ensureWorker() {
   }
   workerKind = kind;
   aiReady = kind !== "ai";
-  worker = new Worker(kind === "ai" ? "./ai.worker.js" : "./color.worker.js");
-  worker.onmessage = async (ev) => {
+  worker = new Worker(kind === "ai" ? "./ai.worker.js?v=perf1" : "./color.worker.js?v=perf1");
+  worker.onmessage = (ev) => {
     const data = ev.data || {};
     if (data.type === "ready") {
       aiReady = true;
@@ -829,8 +846,8 @@ function ensureWorker() {
         const dx = target.x - smoothTarget.x;
         const dy = target.y - smoothTarget.y;
         const dist = Math.hypot(dx, dy);
-        // AI: hard cap jump — without this the line whips across FOV
-        const maxStep = workerKind === "ai" ? 28 : 85;
+        // snappier lock — old maxStep 28 + heavy smooth = visible delay
+        const maxStep = workerKind === "ai" ? 64 : 85;
         let tx = target.x;
         let ty = target.y;
         if (dist > maxStep) {
@@ -840,9 +857,9 @@ function ensureWorker() {
         }
         const a =
           workerKind === "ai"
-            ? dist < 6
-              ? 0.35
-              : 0.55
+            ? dist < 8
+              ? 0.55
+              : 0.82
             : mode === "track"
               ? dist < 6
                 ? 0.14
@@ -855,16 +872,19 @@ function ensureWorker() {
         smoothTarget = { x: nx, y: ny };
       }
       lastTarget = smoothTarget;
-      const extra =
-        mode === "ai" && target.conf != null
-          ? ` · ${NAMES_SHORT[target.cls] || target.cls} ${(target.conf * 100) | 0}%`
-          : "";
-      const timing = ms != null ? ` ${ms}ms` : "";
-      const backend = ep ? ` · ${ep}` : "";
-      targetStatus.textContent = `${mode} · ${lastTarget.x | 0},${lastTarget.y | 0} (${matchCount})${extra}${timing}${backend}`;
+      const now = performance.now();
+      if (now - lastStatusAt > 80) {
+        lastStatusAt = now;
+        const extra =
+          mode === "ai" && target.conf != null
+            ? ` · ${NAMES_SHORT[target.cls] || target.cls} ${(target.conf * 100) | 0}%`
+            : "";
+        const timing = ms != null ? ` ${ms}ms` : "";
+        const backend = ep ? ` · ${ep}` : "";
+        targetStatus.textContent = `${mode} · ${lastTarget.x | 0},${lastTarget.y | 0} (${matchCount})${extra}${timing}${backend}`;
+      }
     } else {
       missFrames++;
-      // AI: drop lock fast — no ghost coast (that was the crazy whip)
       const missLimit = workerKind === "ai" ? 2 : 12;
       const dropAt = workerKind === "ai" ? 3 : 18;
       if (missFrames <= missLimit && smoothTarget && workerKind !== "ai") {
@@ -888,12 +908,14 @@ function ensureWorker() {
     }
 
     if (aimActive() && lastTarget && detectionOn()) {
-      let mx = lastTarget.x - canvas.width / 2;
-      let my = cfg.aim.ignoreY ? 0 : lastTarget.y - canvas.height / 2;
+      let mx = lastTarget.x - (workerKind === "ai" ? video.videoWidth || canvas.width : canvas.width) / 2;
+      let my = cfg.aim.ignoreY
+        ? 0
+        : lastTarget.y - (workerKind === "ai" ? video.videoHeight || canvas.height : canvas.height) / 2;
       if (Math.abs(mx) < 2) mx = 0;
       if (Math.abs(my) < 2) my = 0;
       const speed = cfg.aim.speed / 100;
-      await sendMove(hidDevice, mx * speed, my * speed + (cfg.aim.ignoreY ? 0 : cfg.aim.offset));
+      void sendMove(hidDevice, mx * speed, my * speed + (cfg.aim.ignoreY ? 0 : cfg.aim.offset));
     }
 
     if (triggerActive() && lastTarget && detectionOn()) {
@@ -901,7 +923,7 @@ function ensureWorker() {
       const now = performance.now();
       if (now - lastTriggerAt > 80 + delay) {
         lastTriggerAt = now;
-        await sendClick(hidDevice, 1);
+        void sendClick(hidDevice, 1);
       }
     }
   };
@@ -914,86 +936,143 @@ function ensureWorker() {
 
 const NAMES_SHORT = ["ct", "cth", "t", "th"];
 
-function fovRadiusPx() {
-  return Math.max(
-    28,
-    (Math.min(canvas.width, canvas.height) * (0.2 + (cfg.aim.fov / 20) * 0.45)) | 0
-  );
+function fovRadiusPx(bw, bh) {
+  const w = bw || canvas.width;
+  const h = bh || canvas.height;
+  return Math.max(28, (Math.min(w, h) * (0.2 + (cfg.aim.fov / 20) * 0.45)) | 0);
+}
+
+function syncPreviewMode() {
+  const ai = workerKind === "ai";
+  video.classList.toggle("is-hidden", !ai);
 }
 
 function loop() {
-  if (!video.srcObject) return;
-  // AI: smaller canvas → cheaper getImageData (infer always @320 anyway)
-  const scale =
-    workerKind === "ai"
-      ? Math.min(cfg.canvasScale || 0.5, 0.35)
-      : Math.min(cfg.canvasScale || 0.5, 0.6);
-  const w = Math.max(2, (video.videoWidth * scale) | 0);
-  const h = Math.max(2, (video.videoHeight * scale) | 0);
-  if (w && h && (canvas.width !== w || canvas.height !== h)) {
-    canvas.width = w;
-    canvas.height = h;
+  if (!video.srcObject) {
+    requestAnimationFrame(loop);
+    return;
   }
-  if (canvas.width && video.readyState >= 2) {
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    const radius = fovRadiusPx();
+  const ai = workerKind === "ai";
+  syncPreviewMode();
 
-    // No AI coast — extrapolating vel between slow WASM frames made the line thrash
+  const vw = video.videoWidth | 0;
+  const vh = video.videoHeight | 0;
+  if (!vw || !vh || video.readyState < 2) {
+    requestAnimationFrame(loop);
+    return;
+  }
+
+  const now = performance.now();
+
+  if (ai) {
+    // HUD canvas in video pixel space; video element is the live 60fps preview
+    if (canvas.width !== vw || canvas.height !== vh) {
+      canvas.width = vw;
+      canvas.height = vh;
+    }
+    ctx.clearRect(0, 0, vw, vh);
+
+    const radius = fovRadiusPx(vw, vh);
+
+    // mild coast while inference in flight — hides ~1 frame of delay without thrash
+    if (workerBusy && tracking && lastTarget && smoothTarget) {
+      const sp = Math.hypot(velX, velY);
+      if (sp > 0.15 && sp < 18) {
+        smoothTarget = {
+          x: smoothTarget.x + velX * 0.65,
+          y: smoothTarget.y + velY * 0.65,
+        };
+        velX *= 0.92;
+        velY *= 0.92;
+        lastTarget = smoothTarget;
+      }
+    }
 
     if (cfg.aim.enabled) {
       ctx.strokeStyle = "rgba(255,255,255,0.35)";
       ctx.beginPath();
-      ctx.arc(canvas.width / 2, canvas.height / 2, radius, 0, Math.PI * 2);
+      ctx.arc(vw / 2, vh / 2, radius, 0, Math.PI * 2);
       ctx.stroke();
     }
-
-    if (showDebug && lastDebugPts && lastDebugPts.length) {
-      ctx.fillStyle = "rgba(255, 0, 255, 0.5)";
-      for (let i = 0; i < lastDebugPts.length; i += 2) {
-        const p = lastDebugPts[i];
-        ctx.fillRect(p.x, p.y, 2, 2);
-      }
-    }
-
     if (lastTarget) {
       ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.moveTo(canvas.width / 2, canvas.height / 2);
+      ctx.moveTo(vw / 2, vh / 2);
       ctx.lineTo(lastTarget.x, lastTarget.y);
       ctx.stroke();
+      ctx.lineWidth = 1;
     }
 
-    // overlay at half rate; radar via uiTick
-    if ((frames & 1) === 0) {
-      if (cfg.visuals.detectionOverlay && overlayWin && !overlayWin.closed()) {
-        if (!overlayWin.canvas) {
-          try {
-            overlayWin.canvas = overlayWin.win.document.getElementById("view");
-          } catch {
-            /* ignore */
-          }
-        }
-        if (overlayWin.canvas) overlayApi.draw(overlayWin.canvas, canvas, lastTarget);
-      }
-    }
-
-    detectEvery++;
-    const wantDetect =
+    if (
       !workerBusy &&
       worker &&
       detectionOn() &&
-      (workerKind !== "ai" || aiReady) &&
-      (workerKind === "ai" || detectEvery % 2 === 0);
-
-    if (wantDetect) {
+      aiReady
+    ) {
       workerBusy = true;
-      const cx = canvas.width >> 1;
-      const cy = canvas.height >> 1;
+      const cx = vw >> 1;
+      const cy = vh >> 1;
+      const side = Math.max(64, Math.min(vw, vh, radius * 2));
+      const x0 = Math.max(0, Math.min(vw - side, cx - (side >> 1)));
+      const y0 = Math.max(0, Math.min(vh - side, cy - (side >> 1)));
+      detectCtx.drawImage(video, x0, y0, side, side, 0, 0, DETECT_SZ, DETECT_SZ);
+      const imageData = detectCtx.getImageData(0, 0, DETECT_SZ, DETECT_SZ);
+      worker.postMessage(
+        {
+          id: frames,
+          imageData: imageData.data,
+          width: DETECT_SZ,
+          height: DETECT_SZ,
+          ox: x0,
+          oy: y0,
+          fullW: vw,
+          fullH: vh,
+          mapScale: side / DETECT_SZ,
+          cropIsFov: true,
+          cfg: {
+            tolerance: cfg.detection.tolerance,
+            bone: cfg.aim.bone || "head",
+          },
+        },
+        [imageData.data.buffer]
+      );
+    }
+  } else {
+    // color path: composite video onto canvas (needs pixels for scan)
+    video.classList.add("is-hidden");
+    const scale = Math.min(cfg.canvasScale || 0.5, 0.55);
+    const w = Math.max(2, (vw * scale) | 0);
+    const h = Math.max(2, (vh * scale) | 0);
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+    ctx.drawImage(video, 0, 0, w, h);
+    const radius = fovRadiusPx(w, h);
+    if (cfg.aim.enabled) {
+      ctx.strokeStyle = "rgba(255,255,255,0.35)";
+      ctx.beginPath();
+      ctx.arc(w / 2, h / 2, radius, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    if (lastTarget) {
+      ctx.strokeStyle = "#fff";
+      ctx.beginPath();
+      ctx.moveTo(w / 2, h / 2);
+      ctx.lineTo(lastTarget.x, lastTarget.y);
+      ctx.stroke();
+    }
+    detectEvery++;
+    if (!workerBusy && worker && detectionOn() && detectEvery % 2 === 0) {
+      workerBusy = true;
+      const cx = w >> 1;
+      const cy = h >> 1;
       const x0 = Math.max(0, cx - radius);
       const y0 = Math.max(0, cy - radius);
-      const x1 = Math.min(canvas.width, cx + radius);
-      const y1 = Math.min(canvas.height, cy + radius);
+      const x1 = Math.min(w, cx + radius);
+      const y1 = Math.min(h, cy + radius);
       const cw = Math.max(1, x1 - x0);
       const ch = Math.max(1, y1 - y0);
       const imageData = ctx.getImageData(x0, y0, cw, ch);
@@ -1005,8 +1084,8 @@ function loop() {
           height: ch,
           ox: x0,
           oy: y0,
-          fullW: canvas.width,
-          fullH: canvas.height,
+          fullW: w,
+          fullH: h,
           cfg: {
             targetRGB: cfg.detection.targetRGB,
             targetHSV: cfg.detection.targetHSV,
@@ -1026,8 +1105,42 @@ function loop() {
     }
   }
 
+  if (cfg.visuals.detectionOverlay && overlayWin && !overlayWin.closed() && now - lastOverlayAt > 66) {
+    lastOverlayAt = now;
+    if (!overlayWin.canvas) {
+      try {
+        overlayWin.canvas = overlayWin.win.document.getElementById("view");
+      } catch {
+        /* ignore */
+      }
+    }
+    if (overlayWin.canvas) {
+      if (ai) {
+        // cheap: draw FOV crop from video into overlay
+        const oc = overlayWin.canvas;
+        const octx = oc.getContext("2d");
+        const side = Math.min(vw, vh) * 0.22;
+        const sx = (vw - side) / 2;
+        const sy = (vh - side) / 2;
+        octx.fillStyle = "#000";
+        octx.fillRect(0, 0, oc.width, oc.height);
+        octx.drawImage(video, sx, sy, side, side, 0, 0, oc.width, oc.height);
+        if (lastTarget) {
+          const tx = ((lastTarget.x - sx) / side) * oc.width;
+          const ty = ((lastTarget.y - sy) / side) * oc.height;
+          octx.strokeStyle = "#fff";
+          octx.beginPath();
+          octx.moveTo(oc.width / 2, oc.height / 2);
+          octx.lineTo(tx, ty);
+          octx.stroke();
+        }
+      } else {
+        overlayApi.draw(overlayWin.canvas, canvas, lastTarget);
+      }
+    }
+  }
+
   frames++;
-  const now = performance.now();
   if (now - fpsTimer >= 1000) {
     fpsStatus.textContent = String(frames);
     frames = 0;
@@ -1043,9 +1156,13 @@ if (cfg.visuals.audioRadar.enabled && radarInline) {
   radarInline.style.display = "block";
 }
 
-/* radar paints every frame when enabled */
+/* radar paints ~15Hz when enabled */
 function uiTick() {
-  if (cfg.visuals.audioRadar.enabled) paintRadar();
+  const now = performance.now();
+  if (cfg.visuals.audioRadar.enabled && now - lastRadarAt > 66) {
+    lastRadarAt = now;
+    paintRadar();
+  }
   requestAnimationFrame(uiTick);
 }
 uiTick();

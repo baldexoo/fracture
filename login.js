@@ -13,7 +13,7 @@ btn.addEventListener("click", async () => {
     }
     // softAccept=false → wymagany token-string z firmware
     await loginWithHid({ softAccept: false });
-    location.href = "./panel.html?v=hud2";
+    location.href = "./panel.html?v=perf1";
   } catch (e) {
     err.textContent = e?.message || String(e);
   } finally {
@@ -35,5 +35,5 @@ previewBtn.addEventListener("click", () => {
       preview: true,
     })
   );
-  location.href = "./panel.html?v=hud2";
+  location.href = "./panel.html?v=perf1";
 });

@@ -264,8 +264,13 @@ select {
   width: 100%;
   height: 100%;
   object-fit: contain;
-  opacity: 0;
+  opacity: 1;
   pointer-events: none;
+  background: #050505;
+}
+
+#screenVideo.is-hidden {
+  opacity: 0;
 }
 
 #screenCanvas {
@@ -274,6 +279,7 @@ select {
   width: 100%;
   height: 100%;
   object-fit: contain;
+  background: transparent;
 }
 
 .stage-placeholder {

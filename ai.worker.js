@@ -80,15 +80,27 @@ function letterbox(rgba, w, h) {
   const padX = ((IMGSZ - nw) / 2) | 0;
   const padY = ((IMGSZ - nh) / 2) | 0;
   const tensor = tensorBuf;
-  tensor.fill(FILL);
   const plane = IMGSZ * IMGSZ;
+
+  // fast path: already model size (GPU-scaled crop from main thread)
+  if (w === IMGSZ && h === IMGSZ) {
+    for (let i = 0, p = 0; i < plane; i++, p += 4) {
+      tensor[i] = rgba[p] * (1 / 255);
+      tensor[plane + i] = rgba[p + 1] * (1 / 255);
+      tensor[plane * 2 + i] = rgba[p + 2] * (1 / 255);
+    }
+    return { tensor, scale: 1, padX: 0, padY: 0 };
+  }
+
+  tensor.fill(FILL);
   const inv = 1 / scale;
   for (let y = 0; y < nh; y++) {
     const sy = Math.min(h - 1, ((y + 0.5) * inv) | 0);
     const dy = padY + y;
+    const row = sy * w;
     for (let x = 0; x < nw; x++) {
       const sx = Math.min(w - 1, ((x + 0.5) * inv) | 0);
-      const si = (sy * w + sx) << 2;
+      const si = (row + sx) << 2;
       const di = dy * IMGSZ + (padX + x);
       tensor[di] = rgba[si] * (1 / 255);
       tensor[plane + di] = rgba[si + 1] * (1 / 255);
@@ -125,10 +137,11 @@ function nms(boxes) {
   return keep;
 }
 
-function decode(out, confTh, scale, padX, padY, ox, oy, fovCx, fovCy, fovR2) {
+function decode(out, confTh, scale, padX, padY, ox, oy, fovCx, fovCy, fovR2, mapScale) {
   const data = out.data;
   const num = out.dims[2];
   const attrs = out.dims[1];
+  const ms = mapScale || 1;
   const boxes = [];
   for (let i = 0; i < num; i++) {
     let best = 0;
@@ -147,10 +160,10 @@ function decode(out, confTh, scale, padX, padY, ox, oy, fovCx, fovCy, fovR2) {
     const bw = data[2 * num + i];
     const bh = data[3 * num + i];
 
-    const x1 = (cx - bw / 2 - padX) / scale;
-    const y1 = (cy - bh / 2 - padY) / scale;
-    const x2 = (cx + bw / 2 - padX) / scale;
-    const y2 = (cy + bh / 2 - padY) / scale;
+    const x1 = ((cx - bw / 2 - padX) / scale) * ms;
+    const y1 = ((cy - bh / 2 - padY) / scale) * ms;
+    const x2 = ((cx + bw / 2 - padX) / scale) * ms;
+    const y2 = ((cy + bh / 2 - padY) / scale) * ms;
     const mx = ox + (x1 + x2) * 0.5;
     const my = oy + (y1 + y2) * 0.5;
     const dx = mx - fovCx;
@@ -281,7 +294,7 @@ self.onmessage = async (ev) => {
 
   const t0 = performance.now();
   try {
-    const { imageData, width, height, ox, oy, fullW, fullH, cfg } = msg;
+    const { imageData, width, height, ox, oy, fullW, fullH, cfg, mapScale } = msg;
     const tol = cfg?.tolerance ?? 10;
     const confTh = Math.max(CONF_MIN, Math.min(0.65, 0.5 - tol * 0.003));
     const { tensor, scale, padX, padY } = letterbox(imageData, width, height);
@@ -291,7 +304,10 @@ self.onmessage = async (ev) => {
 
     const fovCx = fullW * 0.5;
     const fovCy = fullH * 0.5;
-    const fovR = Math.min(width, height) * 0.42;
+    // crop already is FOV square → don't shrink again
+    const fovR2 = msg.cropIsFov
+      ? Infinity
+      : (Math.min(width, height) * 0.42 * (mapScale || 1)) ** 2;
     const boxes = decode(
       out,
       confTh,
@@ -302,7 +318,8 @@ self.onmessage = async (ev) => {
       oy,
       fovCx,
       fovCy,
-      fovR * fovR
+      fovR2,
+      mapScale || 1
     );
     const target = pickTarget(boxes, fovCx, fovCy, cfg?.bone || "head");
     const ms = (performance.now() - t0) | 0;
