@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="pl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>fracture</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Syne:wght@500;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./style.css" />
+    <link rel="icon" href="./fracture-boot-240x135.png" />
+  </head>
+  <body class="login-page">
+    <div class="login-atmosphere" aria-hidden="true"></div>
+    <main class="login-hero">
+      <img class="login-logo" src="./fracture-boot-240x135.png" alt="" />
+      <h1 class="login-brand">fracture</h1>
+      <p class="login-tagline">usb token · webhid · bez wifi</p>
+      <div class="login-actions">
+        <button class="btn btn-primary" id="loginBtn" type="button">login</button>
+      </div>
+      <p class="login-steps">
+        1. wpnij t-picoc3 · 2. login · 3. wybierz <em>długi token</em> (inne urządzenia = odrzut)
+      </p>
+      <button class="btn btn-ghost" id="previewBtn" type="button">preview ui</button>
+      <div class="login-error" id="loginError"></div>
+      <div class="login-hint">chrome / edge / opera · localhost lub https</div>
+    </main>
+    <script type="module" src="./login.js"></script>
+  </body>
+</html>

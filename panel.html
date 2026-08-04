@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="pl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>fracture · panel</title>
+    <link rel="stylesheet" href="./style.css" />
+    <link rel="icon" href="./fracture-boot-240x135.png" />
+  </head>
+  <body class="panel-page">
+    <div class="panel-stage" id="stage">
+      <video id="screenVideo" playsinline muted></video>
+      <canvas id="screenCanvas"></canvas>
+      <div class="stage-placeholder" id="stagePlaceholder">
+        kliknij share screen, potem wybierz okno / ekran
+      </div>
+
+      <div class="panel-menu" id="menu">
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-tab="aimbot" type="button">aimbot</button>
+          <button class="tab" data-tab="triggerbot" type="button">triggerbot</button>
+          <button class="tab" data-tab="visuals" type="button">visuals</button>
+          <button class="tab" data-tab="misc" type="button">misc</button>
+        </div>
+
+        <div class="tab-panels">
+          <!-- AIMBOT -->
+          <div class="tab-panel active" id="tab-aimbot">
+            <div class="columns">
+              <div class="box">
+                <div class="box-title">aimbot</div>
+                <div class="row">
+                  <label for="aimEnabled">enabled</label>
+                  <input class="check" type="checkbox" id="aimEnabled" />
+                </div>
+                <div class="row">
+                  <label for="aimIgnoreY">ignore y axis</label>
+                  <input class="check" type="checkbox" id="aimIgnoreY" />
+                </div>
+                <div class="stack">
+                  <div class="label-row"><span>fov</span></div>
+                  <div class="slider-wrap" data-slider="aimFov">
+                    <div class="slider-fill"></div>
+                    <div class="slider-value">20</div>
+                    <input type="range" id="aimFov" min="0" max="20" value="20" />
+                  </div>
+                </div>
+                <div class="stack">
+                  <div class="label-row"><span>speed</span></div>
+                  <div class="slider-wrap" data-slider="aimSpeed">
+                    <div class="slider-fill"></div>
+                    <div class="slider-value">10</div>
+                    <input type="range" id="aimSpeed" min="0" max="100" value="10" />
+                  </div>
+                </div>
+                <div class="stack">
+                  <div class="label-row"><span>offset</span></div>
+                  <div class="slider-wrap" data-slider="aimOffset">
+                    <div class="slider-fill"></div>
+                    <div class="slider-value">0</div>
+                    <input type="range" id="aimOffset" min="-50" max="50" value="0" />
+                  </div>
+                </div>
+                <div class="row">
+                  <label for="aimType">type</label>
+                  <select class="select" id="aimType">
+                    <option value="hold">hold</option>
+                    <option value="always">always</option>
+                  </select>
+                </div>
+                <div class="row">
+                  <label for="aimBone">aim at</label>
+                  <select class="select" id="aimBone">
+                    <option value="head">head</option>
+                    <option value="body">body</option>
+                  </select>
+                </div>
+                <div class="row">
+                  <label for="holdKey">hold key</label>
+                  <select class="select" id="holdKey">
+                    <option value="ShiftLeft">shift</option>
+                    <option value="ControlLeft">ctrl</option>
+                    <option value="AltLeft">alt</option>
+                    <option value="KeyX">x</option>
+                    <option value="KeyC">c</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="box">
+                <div class="box-title">detection</div>
+                <div class="row">
+                  <label for="detColor">color</label>
+                  <input class="check" type="checkbox" id="detColor" checked />
+                </div>
+                <div class="stack">
+                  <div class="label-row"><span>tolerance</span></div>
+                  <div class="slider-wrap" data-slider="detTolerance">
+                    <div class="slider-fill"></div>
+                    <div class="slider-value">10</div>
+                    <input type="range" id="detTolerance" min="0" max="50" value="10" />
+                  </div>
+                </div>
+                <div class="row">
+                  <label for="detMethod">method</label>
+                  <select class="select" id="detMethod">
+                    <option value="color">color</option>
+                    <option value="ai">ai</option>
+                  </select>
+                </div>
+
+                <div class="color-tools" id="colorTools">
+                  <div class="swatch-row">
+                    <button class="icon-btn" id="eyedropperBtn" type="button" title="klik = pipeta OS (gra/desktop) · Shift+klik = plama z podglądu share">
+                      <svg viewBox="0 0 24 24">
+                        <path d="M3 21l7-7" />
+                        <path d="M14.5 4.5l5 5" />
+                        <path d="M12 7l5 5-7.5 7.5H4.5V14.5L12 7z" />
+                      </svg>
+                    </button>
+                    <div class="swatch" id="swatch"></div>
+                    <input class="hue-range" type="range" id="hue" min="0" max="360" value="0" />
+                  </div>
+                  <div class="rgb-row">
+                    <label class="rgb-field"><span>r</span><input id="rgbR" type="number" min="0" max="255" value="255" /></label>
+                    <label class="rgb-field"><span>g</span><input id="rgbG" type="number" min="0" max="255" value="0" /></label>
+                    <label class="rgb-field"><span>b</span><input id="rgbB" type="number" min="0" max="255" value="0" /></label>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- TRIGGERBOT -->
+          <div class="tab-panel" id="tab-triggerbot">
+            <div class="box">
+              <div class="box-title">triggerbot</div>
+              <div class="row">
+                <label for="trigEnabled">enabled</label>
+                <input class="check" type="checkbox" id="trigEnabled" />
+              </div>
+              <div class="row">
+                <label for="trigType">type</label>
+                <select class="select" id="trigType">
+                  <option value="hold">hold</option>
+                  <option value="toggle">toggle</option>
+                </select>
+              </div>
+              <div class="stack">
+                <div class="label-row"><span>prediction</span></div>
+                <div class="slider-wrap" data-slider="trigPrediction">
+                  <div class="slider-fill"></div>
+                  <div class="slider-value">0</div>
+                  <input type="range" id="trigPrediction" min="0" max="50" value="0" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- VISUALS -->
+          <div class="tab-panel" id="tab-visuals">
+            <div class="columns">
+              <div class="box">
+                <div class="box-title">detection overlay</div>
+                <div class="row">
+                  <label for="visOverlay">enabled</label>
+                  <input class="check" type="checkbox" id="visOverlay" />
+                </div>
+                <p style="margin:8px 0 0;color:#666;font-size:11px;text-transform:lowercase">
+                  otwiera osobne okienko — przeciągnij gdzie chcesz
+                </p>
+              </div>
+              <div class="box">
+                <div class="box-title">audio radar</div>
+                <div class="row">
+                  <label for="visRadar">enabled</label>
+                  <input class="check" type="checkbox" id="visRadar" />
+                </div>
+                <p id="radarHint" style="margin:8px 0 0;color:#666;font-size:11px;text-transform:lowercase;line-height:1.35">
+                  puls z <b>CS2</b> (nie mic): share → zakładka <b>Okno</b> → Counter-Strike 2 → włącz
+                  „udostępnij też dźwięk”.<br />
+                  cały ekran + system audio = CS2+Discord naraz — wycisz DC albo bior okno gry.
+                </p>
+                <canvas
+                  id="radarInline"
+                  width="280"
+                  height="150"
+                  style="display:none;width:100%;max-width:280px;height:150px;margin-top:10px;background:#0a0a0a;border:1px solid #222"
+                ></canvas>
+                <div class="stack">
+                  <div class="label-row"><span>distance</span></div>
+                  <div class="slider-wrap" data-slider="radarDistance">
+                    <div class="slider-fill"></div>
+                    <div class="slider-value">35</div>
+                    <input type="range" id="radarDistance" min="0" max="100" value="35" />
+                  </div>
+                </div>
+                <div class="stack">
+                  <div class="label-row"><span>angle</span></div>
+                  <div class="slider-wrap" data-slider="radarAngle">
+                    <div class="slider-fill"></div>
+                    <div class="slider-value">75</div>
+                    <input type="range" id="radarAngle" min="0" max="100" value="75" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- MISC -->
+          <div class="tab-panel" id="tab-misc">
+            <div class="box">
+              <div class="box-title">misc</div>
+              <div class="stack">
+                <div class="label-row"><span>canvas scale</span></div>
+                <div class="slider-wrap" data-slider="canvasScale">
+                  <div class="slider-fill"></div>
+                  <div class="slider-value">50</div>
+                  <input type="range" id="canvasScale" min="25" max="100" value="50" />
+                </div>
+              </div>
+              <div class="toolbar" style="padding: 10px 0 0">
+                <button class="btn" id="resetLockBtn" type="button">reset lock</button>
+                <button class="btn" id="logoutBtn" type="button">logout</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="toolbar">
+          <button class="btn btn-primary" id="shareBtn" type="button">share screen</button>
+        </div>
+
+        <div class="panel-footer">
+          <span>fracture</span>
+          <span>usb webhid</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="status-bar">
+      <span><i class="dot off" id="hidDot"></i>hid: <strong id="hidStatus">disconnected</strong></span>
+      <span>token: <strong id="tokenStatus">—</strong></span>
+      <span>target: <strong id="targetStatus">—</strong></span>
+      <span>audio: <strong id="audioStatus">none</strong></span>
+      <span>fps: <strong id="fpsStatus">0</strong></span>
+    </div>
+
+    <div id="magnifier"><canvas id="magnifierCanvas" width="120" height="120"></canvas></div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
