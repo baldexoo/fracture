@@ -1,5 +1,10 @@
 import { hidSupported, loginWithHid } from "./hid.js";
 
+// Strip leftover login clutter even if an old cached index.html loads.
+for (const sel of [".login-logo", ".login-steps", ".login-hint"]) {
+  document.querySelector(sel)?.remove();
+}
+
 const btn = document.getElementById("loginBtn");
 const previewBtn = document.getElementById("previewBtn");
 const err = document.getElementById("loginError");
@@ -11,7 +16,6 @@ btn.addEventListener("click", async () => {
     if (!hidSupported()) {
       throw new Error("WebHID niedostępne w tej przeglądarce.");
     }
-    // softAccept=false → wymagany token-string z firmware
     await loginWithHid({ softAccept: false });
     location.href = "./panel.html?v=perf1";
   } catch (e) {

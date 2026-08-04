@@ -95,14 +95,16 @@ select {
   padding: 48px 24px 36px;
 }
 
-.login-logo {
-  width: min(200px, 70vw);
-  height: auto;
-  margin: 0 auto 20px;
-  display: block;
-  image-rendering: pixelated;
-  filter: drop-shadow(0 0 24px rgba(255, 255, 255, 0.08));
-  animation: logoIn 0.8s ease-out both;
+.login-logo,
+.login-steps,
+.login-hint {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  animation: none !important;
 }
 
 @keyframes logoIn {
