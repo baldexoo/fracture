@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=track2";
+} from "./utils.js?v=track3";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -12,10 +12,10 @@ import {
   reconnectPaired,
   sendMove,
   sendClick,
-} from "./hid.js?v=track2";
-import { createOverlay } from "./overlay.js?v=track2";
-import { createAudioRadar } from "./audio-radar.js?v=track2";
-import { openToolWindow } from "./popout.js?v=track2";
+} from "./hid.js?v=track3";
+import { createOverlay } from "./overlay.js?v=track3";
+import { createAudioRadar } from "./audio-radar.js?v=track3";
+import { openToolWindow } from "./popout.js?v=track3";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -246,6 +246,15 @@ els.detMethod.addEventListener("change", () => {
   missFrames = 0;
   velX = velY = 0;
   readUiToCfg();
+});
+
+els.aimBone.addEventListener("change", () => {
+  readUiToCfg();
+  smoothTarget = null;
+  lastTarget = null;
+  velX = velY = 0;
+  tracking = false;
+  if (worker && workerKind === "ai") worker.postMessage({ type: "reset" });
 });
 
 els.visOverlay.addEventListener("change", () => {
@@ -802,7 +811,7 @@ function ensureWorker() {
   }
   workerKind = kind;
   aiReady = kind !== "ai";
-  worker = new Worker(kind === "ai" ? "./ai.worker.js?v=track2" : "./color.worker.js?v=perf1");
+  worker = new Worker(kind === "ai" ? "./ai.worker.js?v=track3" : "./color.worker.js?v=perf1");
   worker.onmessage = (ev) => {
     const data = ev.data || {};
     if (data.type === "ready") {
@@ -841,10 +850,8 @@ function ensureWorker() {
       tracking = true;
       lastInferMs = ms != null ? ms : lastInferMs;
 
-      // lead by inference age — detection is of a past frame
-      const lead = Math.min(0.085, (lastInferMs + 8) / 1000);
-      let tx = target.x + velX * lead * 55;
-      let ty = target.y + velY * lead * 55;
+      const tx = target.x;
+      const ty = target.y;
 
       if (!smoothTarget) {
         smoothTarget = { x: tx, y: ty };
@@ -856,26 +863,20 @@ function ensureWorker() {
         const dist = Math.hypot(dx, dy);
         const conf = target.conf ?? 0.5;
 
-        // high-conf close: almost raw (accuracy). far/low: soft cap.
-        if (workerKind === "ai") {
-          if (conf >= 0.78 && dist < 90) {
-            // snap
-          } else {
-            const maxStep = conf >= 0.65 ? 120 : 70;
-            if (dist > maxStep) {
-              const s = maxStep / dist;
-              tx = smoothTarget.x + dx * s;
-              ty = smoothTarget.y + dy * s;
-            }
+        // big jump = camera flick / new box — snap, don't blend (blend = circles)
+        if (workerKind === "ai" && (dist > 55 || conf >= 0.75)) {
+          velX = tx - smoothTarget.x;
+          velY = ty - smoothTarget.y;
+          // clamp vel so next-frame coast can't spiral
+          const sp = Math.hypot(velX, velY);
+          if (sp > 40) {
+            velX = (velX / sp) * 40;
+            velY = (velY / sp) * 40;
           }
-          const a =
-            conf >= 0.8
-              ? dist < 12
-                ? 0.88
-                : 0.95
-              : dist < 10
-                ? 0.7
-                : 0.9;
+          smoothTarget = { x: tx, y: ty };
+        } else if (workerKind === "ai") {
+          // light stick only — was over-smoothed + lead = orbit
+          const a = 0.92;
           const nx = smoothTarget.x * (1 - a) + tx * a;
           const ny = smoothTarget.y * (1 - a) + ty * a;
           velX = nx - smoothTarget.x;
@@ -883,10 +884,12 @@ function ensureWorker() {
           smoothTarget = { x: nx, y: ny };
         } else {
           const maxStep = 85;
+          let sx = tx;
+          let sy = ty;
           if (dist > maxStep) {
             const s = maxStep / dist;
-            tx = smoothTarget.x + dx * s;
-            ty = smoothTarget.y + dy * s;
+            sx = smoothTarget.x + dx * s;
+            sy = smoothTarget.y + dy * s;
           }
           const a =
             mode === "track"
@@ -894,8 +897,8 @@ function ensureWorker() {
                 ? 0.14
                 : 0.28
               : 0.42;
-          const nx = smoothTarget.x * (1 - a) + tx * a;
-          const ny = smoothTarget.y * (1 - a) + ty * a;
+          const nx = smoothTarget.x * (1 - a) + sx * a;
+          const ny = smoothTarget.y * (1 - a) + sy * a;
           velX = nx - smoothTarget.x;
           velY = ny - smoothTarget.y;
           smoothTarget = { x: nx, y: ny };
@@ -916,25 +919,13 @@ function ensureWorker() {
       }
     } else {
       missFrames++;
-      const missLimit = workerKind === "ai" ? 3 : 12;
-      const dropAt = workerKind === "ai" ? 5 : 18;
-      // AI: coast on miss instead of instant drop (feels faster / less flicker)
-      if (missFrames <= missLimit && smoothTarget && workerKind === "ai") {
-        smoothTarget = {
-          x: smoothTarget.x + velX * 0.85,
-          y: smoothTarget.y + velY * 0.85,
-        };
-        velX *= 0.9;
-        velY *= 0.9;
+      const missLimit = workerKind === "ai" ? 2 : 12;
+      const dropAt = workerKind === "ai" ? 4 : 18;
+      // brief hold last point — no velocity coast (that drew circles)
+      if (missFrames <= missLimit && smoothTarget) {
         lastTarget = smoothTarget;
-      } else if (missFrames <= missLimit && smoothTarget && workerKind !== "ai") {
-        smoothTarget = {
-          x: smoothTarget.x + velX * 0.55,
-          y: smoothTarget.y + velY * 0.55,
-        };
-        velX *= 0.88;
-        velY *= 0.88;
-        lastTarget = smoothTarget;
+        velX *= 0.5;
+        velY *= 0.5;
       } else if (missFrames > dropAt) {
         tracking = false;
         lastTarget = null;
@@ -1014,20 +1005,7 @@ function loop() {
 
     const radius = fovRadiusPx(vw, vh);
 
-    // predict while waiting on GPU — scale by last infer time
-    if (workerBusy && tracking && lastTarget && smoothTarget) {
-      const sp = Math.hypot(velX, velY);
-      if (sp > 0.2 && sp < 28) {
-        const k = Math.min(1.1, 0.55 + lastInferMs / 120);
-        smoothTarget = {
-          x: smoothTarget.x + velX * k,
-          y: smoothTarget.y + velY * k,
-        };
-        velX *= 0.94;
-        velY *= 0.94;
-        lastTarget = smoothTarget;
-      }
-    }
+    // no predictive coast — it orbited the target
 
     if (cfg.aim.enabled) {
       ctx.strokeStyle = "rgba(255,255,255,0.35)";
@@ -1052,13 +1030,9 @@ function loop() {
       aiReady
     ) {
       workerBusy = true;
-      // bias crop toward lock so moving targets stay sharp in the 320 window
-      let cx = vw >> 1;
-      let cy = vh >> 1;
-      if (tracking && lastTarget) {
-        cx = ((cx * 0.4 + lastTarget.x * 0.6) | 0);
-        cy = ((cy * 0.4 + lastTarget.y * 0.6) | 0);
-      }
+      // always crop on crosshair (= FOV). biasing to lastTarget lost people on fast mouse flicks
+      const cx = vw >> 1;
+      const cy = vh >> 1;
       const side = Math.max(96, Math.min(vw, vh, radius * 2));
       const x0 = Math.max(0, Math.min(vw - side, cx - (side >> 1)));
       const y0 = Math.max(0, Math.min(vh - side, cy - (side >> 1)));

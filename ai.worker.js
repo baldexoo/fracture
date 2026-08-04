@@ -197,14 +197,10 @@ function aimPoint(b, wantHead) {
   const x = (b.x1 + b.x2) * 0.5;
   let y;
   if (wantHead) {
-    if (b.head && !tall) {
-      // upper-chest of head box ≈ forehead/eyes, not geometric center
-      y = b.y1 + b.h * 0.38;
-    } else {
-      y = b.y1 + b.h * 0.1;
-    }
+    y = b.head && !tall ? b.y1 + b.h * 0.42 : b.y1 + b.h * 0.08;
   } else {
-    y = b.head ? b.y1 + b.h * 0.85 : b.y1 + b.h * 0.36;
+    // torso; if only head box exists, aim below it
+    y = b.head && !tall ? b.y1 + b.h * 1.65 : b.y1 + b.h * 0.35;
   }
   return { x, y, conf: b.conf, cls: b.cls, head: wantHead && b.head && !tall };
 }
@@ -225,36 +221,34 @@ function pickTarget(boxes, cx, cy, bone) {
 
   if (wantHead) {
     const realHeads = heads.filter((b) => b.h / Math.max(1, b.w) <= 2.1);
-    if (realHeads.length) {
-      pool = realHeads;
-    } else {
-      pool = [];
-      for (const b of bodies) {
-        if (!heads.some((h) => iou(h, b) > 0.12)) pool.push(b);
-      }
-      if (!pool.length) pool = bodies.length ? bodies : boxes;
-    }
+    pool = realHeads.length ? realHeads : bodies.length ? bodies : boxes;
   } else {
+    // body mode: ONLY bodies when available — don't stick line to head boxes
     pool = bodies.length ? bodies : heads;
   }
 
-  // lighter sticky — old 72px stuck on ghosts and felt laggy
-  const stickR = lock ? 48 : 0;
+  // sticky to same target, but weak — strong sticky + flick = lose / orbit
+  const stickR = lock ? 90 : 0;
   const stickR2 = stickR * stickR;
 
   let best = null;
   let bestScore = Infinity;
   for (const b of pool) {
     const p = aimPoint(b, wantHead);
+    // body mode + head-only fallback: aim chest under head
+    if (!wantHead && b.head) {
+      p.y = b.y1 + b.h * 2.2;
+      p.head = false;
+    }
     const dCross = (p.x - cx) * (p.x - cx) + (p.y - cy) * (p.y - cy);
-    let score = dCross / (0.25 + b.conf * b.conf);
+    let score = dCross / (0.3 + b.conf);
 
     if (lock && stickR2 > 0) {
       const dLock = (p.x - lock.x) * (p.x - lock.x) + (p.y - lock.y) * (p.y - lock.y);
-      if (dLock <= stickR2) score *= 0.45;
-      else if (dLock > stickR2 * 5 && b.conf < 0.65) score *= 1.8;
+      if (dLock <= stickR2) score *= 0.5;
     }
-    if (wantHead && p.head) score *= 0.65;
+    if (wantHead && p.head) score *= 0.7;
+    if (!wantHead && !b.head) score *= 0.7;
     if (score < bestScore) {
       bestScore = score;
       best = p;
@@ -263,17 +257,7 @@ function pickTarget(boxes, cx, cy, bone) {
 
   if (!best) return null;
 
-  if (lock) {
-    const jump = Math.hypot(best.x - lock.x, best.y - lock.y);
-    // only hold old lock for tiny low-conf flickers
-    if (jump > 110 && best.conf < 0.55) {
-      lock.miss = (lock.miss || 0) + 1;
-      if (lock.miss <= 1) {
-        return { x: lock.x, y: lock.y, conf: lock.conf, cls: lock.cls, sticky: true };
-      }
-    }
-  }
-
+  // never freeze on old lock — that lagged behind flicks
   lock = { x: best.x, y: best.y, conf: best.conf, cls: best.cls, miss: 0 };
   return best;
 }
