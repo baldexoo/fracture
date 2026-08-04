@@ -15,6 +15,7 @@ import {
 } from "./hid.js";
 import { createOverlay } from "./overlay.js";
 import { createAudioRadar } from "./audio-radar.js";
+import { openToolWindow } from "./popout.js";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -30,7 +31,8 @@ const placeholder = document.getElementById("stagePlaceholder");
 const overlayApi = createOverlay();
 const radarApi = createAudioRadar();
 const radarInline = document.getElementById("radarInline");
-const overlayInline = document.getElementById("overlayInline");
+let overlayWin = null;
+let radarWin = null;
 let radarAudioWarned = false;
 const magnifier = document.getElementById("magnifier");
 const magCanvas = document.getElementById("magnifierCanvas");
@@ -232,11 +234,11 @@ els.detMethod.addEventListener("change", () => {
 
 els.visOverlay.addEventListener("change", () => {
   readUiToCfg();
-  toggleOverlay();
+  void toggleOverlay();
 });
 els.visRadar.addEventListener("change", () => {
   readUiToCfg();
-  toggleRadar();
+  void toggleRadar();
 });
 els.radarDistance.addEventListener("input", () => {
   readUiToCfg();
@@ -385,20 +387,54 @@ function toggleColorTools() {
   els.colorTools.classList.toggle("hidden", !show);
 }
 
-function toggleOverlay() {
-  if (overlayInline) {
-    overlayInline.style.display = cfg.visuals.detectionOverlay ? "block" : "none";
+async function toggleOverlay() {
+  if (cfg.visuals.detectionOverlay) {
+    if (overlayWin && !overlayWin.closed()) return overlayWin;
+    // must run in user-gesture turn (checkbox) — never after await share
+    overlayWin = await openToolWindow({
+      name: "fracture-detection-overlay",
+      title: "detection",
+      width: 320,
+      height: 240,
+      canvasWidth: 320,
+      canvasHeight: 200,
+    });
+    if (!overlayWin) {
+      cfg.visuals.detectionOverlay = false;
+      els.visOverlay.checked = false;
+      saveConfig(cfg);
+      targetStatus.textContent = "overlay: pozwól na popupy / Document PiP";
+    }
+    return overlayWin;
   }
+  if (overlayWin) {
+    overlayWin.close();
+    overlayWin = null;
+  }
+  return null;
 }
 
 function paintRadar() {
   const c = cfg.visuals.audioRadar;
   if (radarInline) radarApi.draw(radarInline, c);
+  if (radarWin && !radarWin.closed() && radarWin.canvas) {
+    radarApi.draw(radarWin.canvas, c);
+  }
 }
 
-function toggleRadar() {
+async function toggleRadar() {
   if (cfg.visuals.audioRadar.enabled) {
     if (radarInline) radarInline.style.display = "block";
+    if (!radarWin || radarWin.closed()) {
+      radarWin = await openToolWindow({
+        name: "fracture-audio-radar",
+        title: "radar",
+        width: 300,
+        height: 220,
+        canvasWidth: 300,
+        canvasHeight: 180,
+      });
+    }
     paintRadar();
     radarApi.resume();
     if (stream && !radarApi.getHasAudio() && !radarAudioWarned) {
@@ -407,8 +443,12 @@ function toggleRadar() {
         "Audio radar: brak ścieżki audio.\n\nShare ponownie → Entire screen → włącz „Also share system audio”.\n(Okno / karta gry zwykle nie dają system audio.)"
       );
     }
-  } else if (radarInline) {
-    radarInline.style.display = "none";
+  } else {
+    if (radarInline) radarInline.style.display = "none";
+    if (radarWin) {
+      radarWin.close();
+      radarWin = null;
+    }
   }
 }
 
@@ -614,7 +654,7 @@ async function bindShareStream(media) {
     if (radarInline) radarInline.style.display = "block";
     paintRadar();
   }
-  toggleOverlay();
+  // nie otwieraj okienek tu — po await share nie ma user-gesture (blocker)
 
   vtracks[0]?.addEventListener("ended", () => {
     placeholder.classList.remove("hidden");
@@ -909,8 +949,8 @@ function loop() {
 
     // overlay at half rate; radar via uiTick
     if ((frames & 1) === 0) {
-      if (cfg.visuals.detectionOverlay && overlayInline) {
-        overlayApi.draw(overlayInline, canvas, lastTarget);
+      if (cfg.visuals.detectionOverlay && overlayWin && !overlayWin.closed()) {
+        overlayApi.draw(overlayWin.canvas, canvas, lastTarget);
       }
     }
 
@@ -974,7 +1014,7 @@ function loop() {
 
 writeCfgToUi();
 ensureWorker();
-toggleOverlay();
+// okienka tylko po kliknięciu checkboxa (user gesture) — nie auto-open
 if (cfg.visuals.audioRadar.enabled && radarInline) {
   radarInline.style.display = "block";
 }
