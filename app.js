@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=trig3";
+} from "./utils.js?v=trig5";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -15,10 +15,10 @@ import {
   connectSerial,
   serialConnected,
   serialSupported,
-} from "./hid.js?v=trig3";
-import { createOverlay } from "./overlay.js?v=trig3";
-import { createAudioRadar } from "./audio-radar.js?v=trig3";
-import { openToolWindow } from "./popout.js?v=trig3";
+} from "./hid.js?v=trig5";
+import { createOverlay } from "./overlay.js?v=trig5";
+import { createAudioRadar } from "./audio-radar.js?v=trig5";
+import { openToolWindow } from "./popout.js?v=trig5";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -64,6 +64,7 @@ let loopPrevT = performance.now();
 
 const hidDot = document.getElementById("hidDot");
 const hidStatus = document.getElementById("hidStatus");
+const trigStatus = document.getElementById("trigStatus");
 const tokenStatus = document.getElementById("tokenStatus");
 const targetStatus = document.getElementById("targetStatus");
 const fpsStatus = document.getElementById("fpsStatus");
@@ -76,8 +77,10 @@ let workerBusy = false;
 let aiReady = false;
 let lastTarget = null;
 let smoothTarget = null;
-/** Raw enemy box under CS crosshair (not the aim-line tip / lead). */
+/** Raw enemy boxes under CS crosshair (not the aim-line tip / lead). */
 let lastHitBox = null;
+/** @type {{x1:number,y1:number,x2:number,y2:number,head?:boolean}[]} */
+let lastHitBoxes = [];
 let missFrames = 0;
 let lastDebugPts = null;
 let detectEvery = 0;
@@ -200,9 +203,9 @@ function writeCfgToUi() {
   els.detMethod.value = cfg.detection.method;
   els.trigEnabled.checked = cfg.triggerbot.enabled;
   els.trigType.value = cfg.triggerbot.type;
-  els.trigKey.value = cfg.triggerbot.key || "AltLeft";
+  els.trigKey.value = cfg.triggerbot.key || "KeyX";
   if (!els.trigKey.querySelector(`option[value="${els.trigKey.value}"]`)) {
-    els.trigKey.value = "AltLeft";
+    els.trigKey.value = "KeyX";
   }
   els.trigDelay.value = cfg.triggerbot.delay ?? 40;
   els.trigHit.value = cfg.triggerbot.hitRadius ?? 14;
@@ -275,6 +278,7 @@ els.detMethod.addEventListener("change", () => {
   lastTarget = null;
   smoothTarget = null;
   lastHitBox = null;
+  lastHitBoxes = [];
   missFrames = 0;
   velX = velY = 0;
   readUiToCfg();
@@ -285,6 +289,7 @@ els.aimBone.addEventListener("change", () => {
   smoothTarget = null;
   lastTarget = null;
   lastHitBox = null;
+  lastHitBoxes = [];
   velX = velY = 0;
   trackVx = trackVy = 0;
   rawPrev = null;
@@ -433,6 +438,7 @@ function setRgb(r, g, b, samples = null) {
   lastTarget = null;
   smoothTarget = null;
   lastHitBox = null;
+  lastHitBoxes = [];
   missFrames = 0;
   tracking = false;
   velX = velY = 0;
@@ -884,6 +890,7 @@ document.getElementById("resetLockBtn").addEventListener("click", () => {
   lastTarget = null;
   smoothTarget = null;
   lastHitBox = null;
+  lastHitBoxes = [];
   missFrames = 0;
   lastDebugPts = null;
   tracking = false;
@@ -907,26 +914,48 @@ function mouseBtnForTrig() {
 }
 
 function setTrigDown(down, fromToggleEdge) {
+  if (cfg.triggerbot.type === "always") return;
   if (cfg.triggerbot.type === "toggle") {
     if (down && fromToggleEdge) trigLatched = !trigLatched;
+    updateTrigStatus();
     return;
   }
   trigPressed = down;
   if (!down) trigOnSince = 0;
+  updateTrigStatus();
 }
 
-window.addEventListener("keydown", (e) => {
-  if (e.code === cfg.holdKey) holdPressed = true;
-  if (!isTrigMouseKey() && e.code === trigKeyCode() && e.repeat === false) {
-    setTrigDown(true, true);
-  }
-});
-window.addEventListener("keyup", (e) => {
-  if (e.code === cfg.holdKey) holdPressed = false;
-  if (!isTrigMouseKey() && e.code === trigKeyCode()) {
-    setTrigDown(false, false);
-  }
-});
+function eventMatchesTrigKey(e) {
+  const code = trigKeyCode();
+  if (e.code === code) return true;
+  // OSK / layouts sometimes omit Left/Right suffix
+  if (code === "AltLeft" || code === "AltRight") return e.key === "Alt";
+  if (code === "ShiftLeft" || code === "ShiftRight") return e.key === "Shift";
+  if (code === "ControlLeft" || code === "ControlRight") return e.key === "Control";
+  return false;
+}
+
+window.addEventListener(
+  "keydown",
+  (e) => {
+    if (e.code === cfg.holdKey) holdPressed = true;
+    if (!isTrigMouseKey() && eventMatchesTrigKey(e) && e.repeat === false) {
+      e.preventDefault();
+      setTrigDown(true, true);
+    }
+  },
+  true
+);
+window.addEventListener(
+  "keyup",
+  (e) => {
+    if (e.code === cfg.holdKey) holdPressed = false;
+    if (!isTrigMouseKey() && eventMatchesTrigKey(e)) {
+      setTrigDown(false, false);
+    }
+  },
+  true
+);
 window.addEventListener("mousedown", (e) => {
   if (!isTrigMouseKey() || e.button !== mouseBtnForTrig()) return;
   e.preventDefault();
@@ -937,9 +966,19 @@ window.addEventListener("mouseup", (e) => {
   setTrigDown(false, false);
 });
 // stop Chrome back/forward on side buttons while panel focused
-window.addEventListener("mouseup", (e) => {
-  if (e.button === 3 || e.button === 4) e.preventDefault();
-}, true);
+window.addEventListener(
+  "mouseup",
+  (e) => {
+    if (e.button === 3 || e.button === 4) e.preventDefault();
+  },
+  true
+);
+window.addEventListener("blur", () => {
+  trigPressed = false;
+  holdPressed = false;
+  trigOnSince = 0;
+  updateTrigStatus();
+});
 
 function aimActive() {
   if (!cfg.aim.enabled) return false;
@@ -949,8 +988,30 @@ function aimActive() {
 
 function triggerActive() {
   if (!cfg.triggerbot.enabled) return false;
+  if (cfg.triggerbot.type === "always") return true;
   if (cfg.triggerbot.type === "toggle") return trigLatched;
   return trigPressed;
+}
+
+function updateTrigStatus() {
+  if (!trigStatus) return;
+  if (!cfg.triggerbot.enabled) {
+    trigStatus.textContent = "off";
+    return;
+  }
+  if (!serialConnected()) {
+    trigStatus.textContent = "no serial";
+    return;
+  }
+  if (cfg.triggerbot.type === "always") {
+    trigStatus.textContent = csCrosshairOnEnemy() ? "FIRE" : "always";
+    return;
+  }
+  if (!triggerActive()) {
+    trigStatus.textContent = "wait key";
+    return;
+  }
+  trigStatus.textContent = csCrosshairOnEnemy() ? "FIRE" : "KEY↓";
 }
 
 function frameSize() {
@@ -963,25 +1024,50 @@ function frameSize() {
   return { w: canvas.width, h: canvas.height };
 }
 
+/** Expand tiny head boxes down over torso — CS crosshair often sits on chest. */
+function triggerVolume(b) {
+  const bw = b.x2 - b.x1;
+  const bh = b.y2 - b.y1;
+  const tall = bh / Math.max(1, bw) > 2.1;
+  if (b.head && !tall) {
+    return {
+      x1: b.x1 - bw * 0.2,
+      x2: b.x2 + bw * 0.2,
+      y1: b.y1,
+      y2: b.y1 + bh * 3.4,
+    };
+  }
+  return b;
+}
+
 /**
- * CS crosshair = frame center. Fire only when that point sits on the enemy box
- * (not when the white aim-line tip / lead is near center).
+ * CS crosshair = frame center. Any enemy box under it (not aim-line tip).
  */
 function csCrosshairOnEnemy() {
-  const box = lastHitBox;
-  if (!box) return false;
+  const list = lastHitBoxes.length
+    ? lastHitBoxes
+    : lastHitBox
+      ? [lastHitBox]
+      : [];
+  if (!list.length) return false;
   const { w, h } = frameSize();
+  if (!w || !h) return false;
   const cx = w * 0.5;
   const cy = h * 0.5;
   const pad = cfg.triggerbot.hitRadius ?? 14;
-  const x1 = box.x1 - pad;
-  const x2 = box.x2 + pad;
-  const y1 = cfg.aim.ignoreY ? -1e9 : box.y1 - pad;
-  const y2 = cfg.aim.ignoreY ? 1e9 : box.y2 + pad;
-  return cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2;
+  for (const raw of list) {
+    const box = triggerVolume(raw);
+    const x1 = box.x1 - pad;
+    const x2 = box.x2 + pad;
+    const y1 = cfg.aim.ignoreY ? -1e9 : box.y1 - pad;
+    const y2 = cfg.aim.ignoreY ? 1e9 : box.y2 + pad;
+    if (cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2) return true;
+  }
+  return false;
 }
 
 function tickTriggerbot() {
+  updateTrigStatus();
   if (!triggerActive() || !detectionOn()) {
     trigOnSince = 0;
     return;
@@ -1011,7 +1097,7 @@ function ensureWorker() {
   }
   workerKind = kind;
   aiReady = kind !== "ai";
-  worker = new Worker(kind === "ai" ? "./ai.worker.js?v=trig2" : "./color.worker.js?v=trig2");
+  worker = new Worker(kind === "ai" ? "./ai.worker.js?v=trig5" : "./color.worker.js?v=trig5");
   worker.onmessage = (ev) => {
     const data = ev.data || {};
     if (data.type === "ready") {
@@ -1030,7 +1116,7 @@ function ensureWorker() {
     }
 
     workerBusy = false;
-    const { target, matchCount, mode, warn, ms, ep } = data;
+    const { target, matchCount, mode, warn, ms, ep, boxes } = data;
     lastDebugPts = null;
 
     if (mode === "bad-color" || mode === "ai-error") {
@@ -1038,6 +1124,7 @@ function ensureWorker() {
       lastTarget = null;
       smoothTarget = null;
       lastHitBox = null;
+      lastHitBoxes = [];
       targetStatus.textContent = warn || mode;
       return;
     }
@@ -1046,29 +1133,36 @@ function ensureWorker() {
       return;
     }
 
+    if (Array.isArray(boxes) && boxes.length) {
+      lastHitBoxes = boxes;
+      lastHitBox = boxes[0];
+    }
+
     if (target) {
       missFrames = 0;
       tracking = true;
       lastInferMs = ms != null ? ms : lastInferMs;
       const now = performance.now();
 
-      // trigger: raw box under CS crosshair — never the led/smoothed line tip
-      if (
-        target.x1 != null &&
-        target.y1 != null &&
-        target.x2 != null &&
-        target.y2 != null
-      ) {
-        lastHitBox = { x1: target.x1, y1: target.y1, x2: target.x2, y2: target.y2 };
-      } else {
-        // fallback: tiny box around raw aim point (no lead)
-        const r = 10;
-        lastHitBox = {
-          x1: target.x - r,
-          y1: target.y - r,
-          x2: target.x + r,
-          y2: target.y + r,
-        };
+      if (!lastHitBoxes.length) {
+        if (
+          target.x1 != null &&
+          target.y1 != null &&
+          target.x2 != null &&
+          target.y2 != null
+        ) {
+          lastHitBox = { x1: target.x1, y1: target.y1, x2: target.x2, y2: target.y2 };
+          lastHitBoxes = [lastHitBox];
+        } else {
+          const r = 10;
+          lastHitBox = {
+            x1: target.x - r,
+            y1: target.y - r,
+            x2: target.x + r,
+            y2: target.y + r,
+          };
+          lastHitBoxes = [lastHitBox];
+        }
       }
 
       let tx = target.x;
@@ -1166,6 +1260,7 @@ function ensureWorker() {
         lastTarget = null;
         smoothTarget = null;
         lastHitBox = null;
+        lastHitBoxes = [];
         velX = velY = 0;
         trackVx = trackVy = 0;
         rawPrev = null;
@@ -1407,6 +1502,7 @@ function loop() {
     frames = 0;
     fpsTimer = now;
   }
+  tickTriggerbot();
   requestAnimationFrame(loop);
 }
 

@@ -19,7 +19,7 @@ export const DEFAULTS = {
   triggerbot: {
     enabled: false,
     type: "hold",
-    key: "AltLeft",
+    key: "KeyX",
     delay: 40,
     hitRadius: 14,
     prediction: 0, // legacy

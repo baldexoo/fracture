@@ -329,6 +329,14 @@ self.onmessage = async (ev) => {
     const ms = (performance.now() - t0) | 0;
     self.postMessage({
       target,
+      // all dets — trigger checks CS crosshair vs ANY box (not only aim-bone tip)
+      boxes: boxes.map((b) => ({
+        x1: b.x1,
+        y1: b.y1,
+        x2: b.x2,
+        y2: b.y2,
+        head: !!b.head,
+      })),
       matchCount: boxes.length,
       mode: target ? "ai" : "seek",
       warn: null,
