@@ -251,9 +251,19 @@ export async function sendMove(_device, dx, dy) {
   return true;
 }
 
-/** Left/right click via RP2040 Serial → Mouse.click */
+/** Left/right click via RP2040 Serial → press/release (firmware also handles 0x02). */
 export async function sendClick(_device, btn = 1) {
-  return writeFrame(new Uint8Array([0x02, btn & 0xff, 0x00]));
+  const b = btn & 0xff;
+  // prefer explicit press/release — works even if firmware maps 0x02 oddly
+  const okPress = await writeFrame(new Uint8Array([0x03, b, 0x00]));
+  if (!okPress) return false;
+  await new Promise((r) => setTimeout(r, 30));
+  return writeFrame(new Uint8Array([0x04, b, 0x00]));
+}
+
+/** One-shot test: same path as trigger. */
+export async function testClick() {
+  return sendClick(null, 1);
 }
 
 export { maskToken, TOKEN_MIN_LEN };

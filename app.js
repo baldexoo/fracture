@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=trig5";
+} from "./utils.js?v=trig6";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -15,10 +15,11 @@ import {
   connectSerial,
   serialConnected,
   serialSupported,
-} from "./hid.js?v=trig5";
-import { createOverlay } from "./overlay.js?v=trig5";
-import { createAudioRadar } from "./audio-radar.js?v=trig5";
-import { openToolWindow } from "./popout.js?v=trig5";
+  testClick,
+} from "./hid.js?v=trig6";
+import { createOverlay } from "./overlay.js?v=trig6";
+import { createAudioRadar } from "./audio-radar.js?v=trig6";
+import { openToolWindow } from "./popout.js?v=trig6";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -881,6 +882,16 @@ document.getElementById("serialBtn")?.addEventListener("click", async () => {
   }
 });
 
+document.getElementById("testClickBtn")?.addEventListener("click", async () => {
+  if (!serialConnected()) {
+    alert("Najpierw connect serial (misc) — status musi być hid+serial.");
+    return;
+  }
+  const ok = await testClick();
+  if (trigStatus) trigStatus.textContent = ok ? "clicked" : "click FAIL";
+  if (!ok) alert("Serial write fail — reconnect serial / sprawdź kabel RP2040.");
+});
+
 document.getElementById("logoutBtn").addEventListener("click", () => {
   clearSession();
   location.href = "./index.html";
@@ -1041,20 +1052,21 @@ function triggerVolume(b) {
 }
 
 /**
- * CS crosshair = frame center. Any enemy box under it (not aim-line tip).
+ * CS crosshair = frame center.
+ * Hit if center inside any enemy box OR raw aim point near center.
  */
 function csCrosshairOnEnemy() {
-  const list = lastHitBoxes.length
-    ? lastHitBoxes
-    : lastHitBox
-      ? [lastHitBox]
-      : [];
-  if (!list.length) return false;
   const { w, h } = frameSize();
   if (!w || !h) return false;
   const cx = w * 0.5;
   const cy = h * 0.5;
   const pad = cfg.triggerbot.hitRadius ?? 14;
+
+  const list = lastHitBoxes.length
+    ? lastHitBoxes
+    : lastHitBox
+      ? [lastHitBox]
+      : [];
   for (const raw of list) {
     const box = triggerVolume(raw);
     const x1 = box.x1 - pad;
@@ -1062,6 +1074,13 @@ function csCrosshairOnEnemy() {
     const y1 = cfg.aim.ignoreY ? -1e9 : box.y1 - pad;
     const y2 = cfg.aim.ignoreY ? 1e9 : box.y2 + pad;
     if (cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2) return true;
+  }
+
+  // fallback: bone point (no lead) near crosshair — covers box mapping misses
+  if (lastTarget) {
+    const dx = lastTarget.x - cx;
+    const dy = cfg.aim.ignoreY ? 0 : lastTarget.y - cy;
+    if (Math.hypot(dx, dy) <= pad + 8) return true;
   }
   return false;
 }

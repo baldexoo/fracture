@@ -258,12 +258,15 @@
                 </div>
               </div>
               <div class="toolbar" style="padding: 10px 0 0">
+                <button class="btn btn-primary" id="testClickBtn" type="button">test click</button>
                 <button class="btn" id="serialBtn" type="button">connect serial</button>
                 <button class="btn" id="resetLockBtn" type="button">reset lock</button>
                 <button class="btn" id="logoutBtn" type="button">logout</button>
               </div>
               <p style="margin:8px 0 0;color:#666;font-size:11px;text-transform:lowercase;line-height:1.35">
-                klik/aim idzie przez USB Serial Pico (nie WebHID mouse). po wgraniu nowego firmware — reconnect.
+                test click = LMB przez Serial na Pico (LED na płytce ma mignąć).
+                jak test nie klika → wgraj nowy fracture_boot.uf2 (BOOT→RPI-RP2).
+                long-press przycisku na płytce = też test LMB (bez Serial).
               </p>
             </div>
           </div>
@@ -291,6 +294,6 @@
 
     <div id="magnifier"><canvas id="magnifierCanvas" width="120" height="120"></canvas></div>
 
-    <script type="module" src="./app.js?v=trig5"></script>
+    <script type="module" src="./app.js?v=trig6"></script>
   </body>
 </html>
