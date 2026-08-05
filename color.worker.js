@@ -186,7 +186,7 @@ function bestBlob(flat, stride, minN, preferX, preferY, stickX, stickY, stickStr
 
     if (score > bestScore) {
       bestScore = score;
-      best = { x: mx, y: my, n, score };
+      best = { x: mx, y: my, n, score, minX, maxX, minY, maxY };
     }
   }
   return best;
@@ -243,7 +243,15 @@ self.onmessage = (ev) => {
     matchCount = (flat.length / 2) | 0;
     const blob = bestBlob(flat, 1, 4, lx, ly, lx, ly, true, fovSpan);
     if (blob && Math.hypot(blob.x - lx, blob.y - ly) < tw * 0.95) {
-      targetPt = { x: blob.x + ox, y: blob.y + oy, n: blob.n };
+      targetPt = {
+        x: blob.x + ox,
+        y: blob.y + oy,
+        n: blob.n,
+        x1: blob.minX + ox,
+        y1: blob.minY + oy,
+        x2: blob.maxX + ox,
+        y2: blob.maxY + oy,
+      };
       mode = "track";
     }
   }
@@ -260,7 +268,15 @@ self.onmessage = (ev) => {
     const stickY = prev ? prev.y - oy : null;
     const blob = bestBlob(flat, stride, 4, cx, cy, stickX, stickY, !!prev, fovSpan);
     if (blob) {
-      targetPt = { x: blob.x + ox, y: blob.y + oy, n: blob.n };
+      targetPt = {
+        x: blob.x + ox,
+        y: blob.y + oy,
+        n: blob.n,
+        x1: blob.minX + ox,
+        y1: blob.minY + oy,
+        x2: blob.maxX + ox,
+        y2: blob.maxY + oy,
+      };
       mode = noisy ? "acquire-noisy" : "acquire";
     } else if (noisy) {
       mode = "noisy";

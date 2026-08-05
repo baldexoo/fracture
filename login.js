@@ -1,4 +1,4 @@
-import { hidSupported, loginWithHid } from "./hid.js";
+import { hidSupported, loginWithHid } from "./hid.js?v=trig1";
 
 // Strip leftover login clutter even if an old cached index.html loads.
 for (const sel of [".login-logo", ".login-steps", ".login-hint"]) {
@@ -17,7 +17,7 @@ btn.addEventListener("click", async () => {
       throw new Error("WebHID niedostępne w tej przeglądarce.");
     }
     await loginWithHid({ softAccept: false });
-    location.href = "./panel.html?v=perf1";
+    location.href = "./panel.html?v=trig3";
   } catch (e) {
     err.textContent = e?.message || String(e);
   } finally {

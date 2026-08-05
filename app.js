@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=audio2";
+} from "./utils.js?v=trig3";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -12,10 +12,13 @@ import {
   reconnectPaired,
   sendMove,
   sendClick,
-} from "./hid.js?v=audio2";
-import { createOverlay } from "./overlay.js?v=audio2";
-import { createAudioRadar } from "./audio-radar.js?v=audio2";
-import { openToolWindow } from "./popout.js?v=audio2";
+  connectSerial,
+  serialConnected,
+  serialSupported,
+} from "./hid.js?v=trig3";
+import { createOverlay } from "./overlay.js?v=trig3";
+import { createAudioRadar } from "./audio-radar.js?v=trig3";
+import { openToolWindow } from "./popout.js?v=trig3";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -73,6 +76,8 @@ let workerBusy = false;
 let aiReady = false;
 let lastTarget = null;
 let smoothTarget = null;
+/** Raw enemy box under CS crosshair (not the aim-line tip / lead). */
+let lastHitBox = null;
 let missFrames = 0;
 let lastDebugPts = null;
 let detectEvery = 0;
@@ -81,12 +86,14 @@ let tracking = false;
 let velX = 0;
 let velY = 0;
 let holdPressed = false;
+let trigPressed = false;
 let trigLatched = false;
 let eyedropperOn = false;
 let labSamples = null; // session: Lab triples from belly/patch pick (not in localStorage)
 let frames = 0;
 let fpsTimer = performance.now();
 let lastTriggerAt = 0;
+let trigOnSince = 0;
 let loopStarted = false;
 
 tokenStatus.textContent = session?.tokenMasked || maskToken(session?.token || "—");
@@ -99,9 +106,12 @@ reconnectPaired()
   .catch(() => setHidUi(false));
 
 function setHidUi(on) {
-  hidDot.classList.toggle("on", on);
-  hidDot.classList.toggle("off", !on);
-  hidStatus.textContent = on ? "connected" : "disconnected";
+  const ser = serialConnected();
+  hidDot.classList.toggle("on", on && ser);
+  hidDot.classList.toggle("off", !(on && ser));
+  if (!on) hidStatus.textContent = "disconnected";
+  else if (!ser) hidStatus.textContent = "hid · no serial";
+  else hidStatus.textContent = "hid+serial";
 }
 
 function maskToken(t) {
@@ -158,7 +168,11 @@ const els = {
   detMethod: document.getElementById("detMethod"),
   trigEnabled: document.getElementById("trigEnabled"),
   trigType: document.getElementById("trigType"),
-  trigPrediction: document.getElementById("trigPrediction"),
+  trigKey: document.getElementById("trigKey"),
+  trigDelay: document.getElementById("trigDelay"),
+  trigHit: document.getElementById("trigHit"),
+  trigDelayLabel: document.getElementById("trigDelayLabel"),
+  trigHitLabel: document.getElementById("trigHitLabel"),
   visOverlay: document.getElementById("visOverlay"),
   visRadar: document.getElementById("visRadar"),
   radarDistance: document.getElementById("radarDistance"),
@@ -186,7 +200,14 @@ function writeCfgToUi() {
   els.detMethod.value = cfg.detection.method;
   els.trigEnabled.checked = cfg.triggerbot.enabled;
   els.trigType.value = cfg.triggerbot.type;
-  els.trigPrediction.value = cfg.triggerbot.prediction;
+  els.trigKey.value = cfg.triggerbot.key || "AltLeft";
+  if (!els.trigKey.querySelector(`option[value="${els.trigKey.value}"]`)) {
+    els.trigKey.value = "AltLeft";
+  }
+  els.trigDelay.value = cfg.triggerbot.delay ?? 40;
+  els.trigHit.value = cfg.triggerbot.hitRadius ?? 14;
+  if (els.trigDelayLabel) els.trigDelayLabel.textContent = String(els.trigDelay.value);
+  if (els.trigHitLabel) els.trigHitLabel.textContent = String(els.trigHit.value);
   els.visOverlay.checked = cfg.visuals.detectionOverlay;
   els.visRadar.checked = cfg.visuals.audioRadar.enabled;
   els.radarDistance.value = cfg.visuals.audioRadar.distance;
@@ -216,7 +237,11 @@ function readUiToCfg() {
   cfg.detection.method = els.detMethod.value;
   cfg.triggerbot.enabled = els.trigEnabled.checked;
   cfg.triggerbot.type = els.trigType.value;
-  cfg.triggerbot.prediction = Number(els.trigPrediction.value);
+  cfg.triggerbot.key = els.trigKey.value;
+  cfg.triggerbot.delay = Number(els.trigDelay.value);
+  cfg.triggerbot.hitRadius = Number(els.trigHit.value);
+  if (els.trigDelayLabel) els.trigDelayLabel.textContent = String(cfg.triggerbot.delay);
+  if (els.trigHitLabel) els.trigHitLabel.textContent = String(cfg.triggerbot.hitRadius);
   cfg.visuals.detectionOverlay = els.visOverlay.checked;
   cfg.visuals.audioRadar.enabled = els.visRadar.checked;
   cfg.visuals.audioRadar.distance = Number(els.radarDistance.value);
@@ -241,6 +266,7 @@ function detectionOn() {
   els.detColor,
   els.trigEnabled,
   els.trigType,
+  els.trigKey,
   els.holdKey,
 ].forEach((el) => el.addEventListener("change", readUiToCfg));
 
@@ -248,6 +274,7 @@ els.detMethod.addEventListener("change", () => {
   tracking = false;
   lastTarget = null;
   smoothTarget = null;
+  lastHitBox = null;
   missFrames = 0;
   velX = velY = 0;
   readUiToCfg();
@@ -257,6 +284,7 @@ els.aimBone.addEventListener("change", () => {
   readUiToCfg();
   smoothTarget = null;
   lastTarget = null;
+  lastHitBox = null;
   velX = velY = 0;
   trackVx = trackVy = 0;
   rawPrev = null;
@@ -404,6 +432,7 @@ function setRgb(r, g, b, samples = null) {
   saveConfig(cfg);
   lastTarget = null;
   smoothTarget = null;
+  lastHitBox = null;
   missFrames = 0;
   tracking = false;
   velX = velY = 0;
@@ -836,6 +865,16 @@ document.addEventListener(
   { passive: true }
 );
 
+document.getElementById("serialBtn")?.addEventListener("click", async () => {
+  try {
+    if (!serialSupported()) throw new Error("Web Serial niedostępne — Chrome / Edge.");
+    await connectSerial({ requestIfNeeded: true });
+    setHidUi(!!hidDevice);
+  } catch (e) {
+    alert(e?.message || String(e));
+  }
+});
+
 document.getElementById("logoutBtn").addEventListener("click", () => {
   clearSession();
   location.href = "./index.html";
@@ -844,6 +883,7 @@ document.getElementById("logoutBtn").addEventListener("click", () => {
 document.getElementById("resetLockBtn").addEventListener("click", () => {
   lastTarget = null;
   smoothTarget = null;
+  lastHitBox = null;
   missFrames = 0;
   lastDebugPts = null;
   tracking = false;
@@ -852,15 +892,54 @@ document.getElementById("resetLockBtn").addEventListener("click", () => {
 });
 
 /* —— keys —— */
+function trigKeyCode() {
+  return cfg.triggerbot.key || "AltLeft";
+}
+
+function isTrigMouseKey() {
+  const k = trigKeyCode();
+  return k === "Mouse4" || k === "Mouse5";
+}
+
+function mouseBtnForTrig() {
+  // browser: 3 = back (mouse4), 4 = forward (mouse5)
+  return trigKeyCode() === "Mouse5" ? 4 : 3;
+}
+
+function setTrigDown(down, fromToggleEdge) {
+  if (cfg.triggerbot.type === "toggle") {
+    if (down && fromToggleEdge) trigLatched = !trigLatched;
+    return;
+  }
+  trigPressed = down;
+  if (!down) trigOnSince = 0;
+}
+
 window.addEventListener("keydown", (e) => {
   if (e.code === cfg.holdKey) holdPressed = true;
-  if (cfg.triggerbot.type === "toggle" && e.code === cfg.holdKey && e.repeat === false) {
-    trigLatched = !trigLatched;
+  if (!isTrigMouseKey() && e.code === trigKeyCode() && e.repeat === false) {
+    setTrigDown(true, true);
   }
 });
 window.addEventListener("keyup", (e) => {
   if (e.code === cfg.holdKey) holdPressed = false;
+  if (!isTrigMouseKey() && e.code === trigKeyCode()) {
+    setTrigDown(false, false);
+  }
 });
+window.addEventListener("mousedown", (e) => {
+  if (!isTrigMouseKey() || e.button !== mouseBtnForTrig()) return;
+  e.preventDefault();
+  setTrigDown(true, true);
+});
+window.addEventListener("mouseup", (e) => {
+  if (!isTrigMouseKey() || e.button !== mouseBtnForTrig()) return;
+  setTrigDown(false, false);
+});
+// stop Chrome back/forward on side buttons while panel focused
+window.addEventListener("mouseup", (e) => {
+  if (e.button === 3 || e.button === 4) e.preventDefault();
+}, true);
 
 function aimActive() {
   if (!cfg.aim.enabled) return false;
@@ -871,7 +950,54 @@ function aimActive() {
 function triggerActive() {
   if (!cfg.triggerbot.enabled) return false;
   if (cfg.triggerbot.type === "toggle") return trigLatched;
-  return holdPressed;
+  return trigPressed;
+}
+
+function frameSize() {
+  if (workerKind === "ai") {
+    return {
+      w: video.videoWidth || canvas.width,
+      h: video.videoHeight || canvas.height,
+    };
+  }
+  return { w: canvas.width, h: canvas.height };
+}
+
+/**
+ * CS crosshair = frame center. Fire only when that point sits on the enemy box
+ * (not when the white aim-line tip / lead is near center).
+ */
+function csCrosshairOnEnemy() {
+  const box = lastHitBox;
+  if (!box) return false;
+  const { w, h } = frameSize();
+  const cx = w * 0.5;
+  const cy = h * 0.5;
+  const pad = cfg.triggerbot.hitRadius ?? 14;
+  const x1 = box.x1 - pad;
+  const x2 = box.x2 + pad;
+  const y1 = cfg.aim.ignoreY ? -1e9 : box.y1 - pad;
+  const y2 = cfg.aim.ignoreY ? 1e9 : box.y2 + pad;
+  return cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2;
+}
+
+function tickTriggerbot() {
+  if (!triggerActive() || !detectionOn()) {
+    trigOnSince = 0;
+    return;
+  }
+  const now = performance.now();
+  if (!csCrosshairOnEnemy()) {
+    trigOnSince = 0;
+    return;
+  }
+  if (!trigOnSince) trigOnSince = now;
+  const delay = cfg.triggerbot.delay ?? 40;
+  if (now - trigOnSince < delay) return;
+  if (now - lastTriggerAt < 90) return;
+  if (!serialConnected()) return;
+  lastTriggerAt = now;
+  void sendClick(hidDevice, 1);
 }
 
 function ensureWorker() {
@@ -885,7 +1011,7 @@ function ensureWorker() {
   }
   workerKind = kind;
   aiReady = kind !== "ai";
-  worker = new Worker(kind === "ai" ? "./ai.worker.js?v=body1" : "./color.worker.js?v=perf1");
+  worker = new Worker(kind === "ai" ? "./ai.worker.js?v=trig2" : "./color.worker.js?v=trig2");
   worker.onmessage = (ev) => {
     const data = ev.data || {};
     if (data.type === "ready") {
@@ -911,6 +1037,7 @@ function ensureWorker() {
       tracking = false;
       lastTarget = null;
       smoothTarget = null;
+      lastHitBox = null;
       targetStatus.textContent = warn || mode;
       return;
     }
@@ -924,6 +1051,25 @@ function ensureWorker() {
       tracking = true;
       lastInferMs = ms != null ? ms : lastInferMs;
       const now = performance.now();
+
+      // trigger: raw box under CS crosshair — never the led/smoothed line tip
+      if (
+        target.x1 != null &&
+        target.y1 != null &&
+        target.x2 != null &&
+        target.y2 != null
+      ) {
+        lastHitBox = { x1: target.x1, y1: target.y1, x2: target.x2, y2: target.y2 };
+      } else {
+        // fallback: tiny box around raw aim point (no lead)
+        const r = 10;
+        lastHitBox = {
+          x1: target.x - r,
+          y1: target.y - r,
+          x2: target.x + r,
+          y2: target.y + r,
+        };
+      }
 
       let tx = target.x;
       let ty = target.y;
@@ -1019,6 +1165,7 @@ function ensureWorker() {
         tracking = false;
         lastTarget = null;
         smoothTarget = null;
+        lastHitBox = null;
         velX = velY = 0;
         trackVx = trackVy = 0;
         rawPrev = null;
@@ -1028,25 +1175,17 @@ function ensureWorker() {
       }
     }
 
-    if (aimActive() && lastTarget && detectionOn()) {
-      let mx = lastTarget.x - (workerKind === "ai" ? video.videoWidth || canvas.width : canvas.width) / 2;
-      let my = cfg.aim.ignoreY
-        ? 0
-        : lastTarget.y - (workerKind === "ai" ? video.videoHeight || canvas.height : canvas.height) / 2;
+    if (aimActive() && lastTarget && detectionOn() && serialConnected()) {
+      const { w, h } = frameSize();
+      let mx = lastTarget.x - w / 2;
+      let my = cfg.aim.ignoreY ? 0 : lastTarget.y - h / 2;
       if (Math.abs(mx) < 2) mx = 0;
       if (Math.abs(my) < 2) my = 0;
       const speed = cfg.aim.speed / 100;
       void sendMove(hidDevice, mx * speed, my * speed + (cfg.aim.ignoreY ? 0 : cfg.aim.offset));
     }
 
-    if (triggerActive() && lastTarget && detectionOn()) {
-      const delay = cfg.triggerbot.prediction * 4;
-      const now = performance.now();
-      if (now - lastTriggerAt > 80 + delay) {
-        lastTriggerAt = now;
-        void sendClick(hidDevice, 1);
-      }
-    }
+    tickTriggerbot();
   };
 
   if (kind === "ai") {

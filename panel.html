@@ -146,14 +146,45 @@
                   <option value="toggle">toggle</option>
                 </select>
               </div>
+              <div class="row">
+                <label for="trigKey">key</label>
+                <select class="select" id="trigKey">
+                  <option value="ShiftLeft">shift</option>
+                  <option value="ControlLeft">ctrl</option>
+                  <option value="AltLeft">alt</option>
+                  <option value="KeyX">x</option>
+                  <option value="KeyC">c</option>
+                  <option value="KeyV">v</option>
+                  <option value="Mouse4">mouse 4</option>
+                  <option value="Mouse5">mouse 5</option>
+                </select>
+              </div>
               <div class="stack">
-                <div class="label-row"><span>prediction</span></div>
-                <div class="slider-wrap" data-slider="trigPrediction">
+                <div class="label-row">
+                  <span>delay (ms)</span>
+                  <span id="trigDelayLabel">40</span>
+                </div>
+                <div class="slider-wrap" data-slider="trigDelay">
                   <div class="slider-fill"></div>
-                  <div class="slider-value">0</div>
-                  <input type="range" id="trigPrediction" min="0" max="50" value="0" />
+                  <div class="slider-value">40</div>
+                  <input type="range" id="trigDelay" min="0" max="250" value="40" />
                 </div>
               </div>
+              <div class="stack">
+                <div class="label-row">
+                  <span>hit radius</span>
+                  <span id="trigHitLabel">14</span>
+                </div>
+                <div class="slider-wrap" data-slider="trigHit">
+                  <div class="slider-fill"></div>
+                  <div class="slider-value">14</div>
+                  <input type="range" id="trigHit" min="4" max="40" value="14" />
+                </div>
+              </div>
+              <p style="margin:10px 0 0;color:#666;font-size:11px;text-transform:lowercase;line-height:1.35">
+                strzela gdy celownik CS (środek ekranu) jest na boxie wroga — nie gdy biała kreska aimu.
+                key = osobny przycisk (nie hold z aima). mouse 4/5 = boczne.
+              </p>
             </div>
           </div>
 
@@ -225,9 +256,13 @@
                 </div>
               </div>
               <div class="toolbar" style="padding: 10px 0 0">
+                <button class="btn" id="serialBtn" type="button">connect serial</button>
                 <button class="btn" id="resetLockBtn" type="button">reset lock</button>
                 <button class="btn" id="logoutBtn" type="button">logout</button>
               </div>
+              <p style="margin:8px 0 0;color:#666;font-size:11px;text-transform:lowercase;line-height:1.35">
+                klik/aim idzie przez USB Serial Pico (nie WebHID mouse). po wgraniu nowego firmware — reconnect.
+              </p>
             </div>
           </div>
         </div>
@@ -244,7 +279,7 @@
     </div>
 
     <div class="status-bar">
-      <span><i class="dot off" id="hidDot"></i>hid: <strong id="hidStatus">disconnected</strong></span>
+      <span><i class="dot off" id="hidDot"></i>rp2040: <strong id="hidStatus">disconnected</strong></span>
       <span>token: <strong id="tokenStatus">—</strong></span>
       <span>target: <strong id="targetStatus">—</strong></span>
       <span>audio: <strong id="audioStatus">none</strong></span>
@@ -253,6 +288,6 @@
 
     <div id="magnifier"><canvas id="magnifierCanvas" width="120" height="120"></canvas></div>
 
-    <script type="module" src="./app.js?v=audio2"></script>
+    <script type="module" src="./app.js?v=trig3"></script>
   </body>
 </html>

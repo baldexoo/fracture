@@ -1,4 +1,4 @@
-/** WebHID helper — USB only. No WiFi. Token = USB product string. */
+/** WebHID + USB Serial to RP2040 (Mouse HID + command channel). */
 
 const SESSION_KEY = "fracture_hid_session";
 
@@ -8,8 +8,14 @@ export const FRACTURE_USB_TOKEN = "oFbFVKkjWDhgUav5QPfMCJ4q8NHJ4Lr";
 /** Raspberry Pi / earlephilhower Pico VID */
 const PICO_VID = 0x2e8a;
 
-/** Min length for falli.ng-style token product name (not "Pico" / "Mouse"). */
 const TOKEN_MIN_LEN = 24;
+
+/** @type {HIDDevice | null} */
+let hidDevice = null;
+/** @type {SerialPort | null} */
+let serialPort = null;
+/** @type {WritableStreamDefaultWriter<Uint8Array> | null} */
+let serialWriter = null;
 
 export function getSession() {
   try {
@@ -21,6 +27,8 @@ export function getSession() {
 
 export function clearSession() {
   sessionStorage.removeItem(SESSION_KEY);
+  void closeSerial();
+  hidDevice = null;
 }
 
 export function requireSessionOrRedirect() {
@@ -33,6 +41,10 @@ export function requireSessionOrRedirect() {
 
 export function hidSupported() {
   return typeof navigator !== "undefined" && !!navigator.hid;
+}
+
+export function serialSupported() {
+  return typeof navigator !== "undefined" && !!navigator.serial;
 }
 
 export function looksLikeToken(name) {
@@ -51,7 +63,6 @@ export function looksLikeToken(name) {
   return /^[A-Za-z0-9_-]+$/.test(s);
 }
 
-/** Exact match to this board's token — other HID devices fail login. */
 export function isFractureToken(name) {
   return (name || "").trim() === FRACTURE_USB_TOKEN;
 }
@@ -61,9 +72,74 @@ function maskToken(t) {
   return `${t.slice(0, 4)}***${t.slice(-4)}`;
 }
 
+async function closeSerial() {
+  try {
+    serialWriter?.releaseLock();
+  } catch {
+    /* ignore */
+  }
+  serialWriter = null;
+  try {
+    await serialPort?.close();
+  } catch {
+    /* ignore */
+  }
+  serialPort = null;
+}
+
+async function openSerialPort(port) {
+  if (!port) return false;
+  if (!port.readable && !port.writable) {
+    await port.open({ baudRate: 115200 });
+  } else if (!port.writable) {
+    await port.open({ baudRate: 115200 });
+  }
+  serialPort = port;
+  serialWriter = port.writable.getWriter();
+  return true;
+}
+
+/** Prefer already-permitted Pico serial; else native picker (call from click). */
+export async function connectSerial({ requestIfNeeded = true } = {}) {
+  if (!serialSupported()) {
+    throw new Error("Web Serial niedostępne — Chrome / Edge.");
+  }
+  await closeSerial();
+
+  const granted = await navigator.serial.getPorts();
+  let port =
+    granted.find((p) => {
+      const i = p.getInfo?.() || {};
+      return i.usbVendorId === PICO_VID;
+    }) || null;
+
+  if (!port && requestIfNeeded) {
+    port = await navigator.serial.requestPort({
+      filters: [{ usbVendorId: PICO_VID }],
+    });
+  }
+  if (!port) return false;
+  return openSerialPort(port);
+}
+
+export function serialConnected() {
+  return !!(serialPort && serialWriter);
+}
+
+async function writeFrame(bytes) {
+  if (!serialWriter) return false;
+  try {
+    await serialWriter.write(bytes);
+    return true;
+  } catch (e) {
+    console.warn("serial write failed", e);
+    await closeSerial();
+    return false;
+  }
+}
+
 /**
- * Opens native HID picker (Pico VID only). Firmware product string = login token.
- * softAccept: allow non-token devices (dev / preview only — not used by login).
+ * Opens HID picker (auth/token) then Serial (mouse commands to RP2040).
  */
 export async function loginWithHid({ softAccept = false } = {}) {
   if (!hidSupported()) {
@@ -72,7 +148,6 @@ export async function loginWithHid({ softAccept = false } = {}) {
 
   const devices = await navigator.hid.requestDevice({
     filters: [{ vendorId: PICO_VID }],
-    // Chrome may still list previously-granted non-Pico; we reject below.
   });
 
   if (!devices || !devices.length) {
@@ -100,6 +175,17 @@ export async function loginWithHid({ softAccept = false } = {}) {
   if (!device.opened) {
     await device.open();
   }
+  hidDevice = device;
+
+  // Command channel — same USB composite CDC as Mouse HID
+  try {
+    await connectSerial({ requestIfNeeded: true });
+  } catch (e) {
+    console.warn("serial connect", e);
+    throw new Error(
+      "HID OK, ale wybierz też port Serial Pico (ten sam USB) — bez tego trigger/aim nie wyśle klików."
+    );
+  }
 
   const token = tokenOk
     ? productName
@@ -115,9 +201,10 @@ export async function loginWithHid({ softAccept = false } = {}) {
     productId: device.productId,
     at: Date.now(),
     soft: !tokenOk,
+    serial: serialConnected(),
   };
   sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
-  return { device, session };
+  return { device, session, serial: serialConnected() };
 }
 
 export async function reconnectPaired() {
@@ -137,19 +224,36 @@ export async function reconnectPaired() {
     return null;
   }
   if (!match.opened) await match.open();
+  hidDevice = match;
+
+  try {
+    await connectSerial({ requestIfNeeded: false });
+  } catch {
+    /* user can reconnect via button later */
+  }
   return match;
 }
 
-/** Relative mouse move — stub until custom HID output report exists. */
-export async function sendMove(device, dx, dy) {
-  if (!device) return;
-  void dx;
-  void dy;
+/** Relative mouse move via RP2040 Serial → Mouse.move */
+export async function sendMove(_device, dx, dy) {
+  if (!serialWriter) return false;
+  let x = Math.round(dx);
+  let y = Math.round(dy);
+  // chunk into int8 steps
+  while (x !== 0 || y !== 0) {
+    const sx = Math.max(-127, Math.min(127, x));
+    const sy = Math.max(-127, Math.min(127, y));
+    const ok = await writeFrame(new Uint8Array([0x01, sx & 0xff, sy & 0xff]));
+    if (!ok) return false;
+    x -= sx;
+    y -= sy;
+  }
+  return true;
 }
 
-export async function sendClick(device, btn = 1) {
-  if (!device) return;
-  void btn;
+/** Left/right click via RP2040 Serial → Mouse.click */
+export async function sendClick(_device, btn = 1) {
+  return writeFrame(new Uint8Array([0x02, btn & 0xff, 0x00]));
 }
 
 export { maskToken, TOKEN_MIN_LEN };

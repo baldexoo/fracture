@@ -205,7 +205,18 @@ function aimPoint(b, wantHead) {
     // body box → exact geometric center of torso
     y = (b.y1 + b.y2) * 0.5;
   }
-  return { x, y, conf: b.conf, cls: b.cls, head: wantHead && b.head && !tall };
+  return {
+    x,
+    y,
+    conf: b.conf,
+    cls: b.cls,
+    head: wantHead && b.head && !tall,
+    // raw det box — trigger uses this vs CS crosshair, not the aim-line tip
+    x1: b.x1,
+    y1: b.y1,
+    x2: b.x2,
+    y2: b.y2,
+  };
 }
 
 function pickTarget(boxes, cx, cy, bone) {
