@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=track3";
+} from "./utils.js?v=track4";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -16,10 +16,10 @@ import {
   serialConnected,
   serialSupported,
   testClick,
-} from "./hid.js?v=track3";
-import { createOverlay } from "./overlay.js?v=track3";
-import { createAudioRadar } from "./audio-radar.js?v=track3";
-import { openToolWindow } from "./popout.js?v=track3";
+} from "./hid.js?v=track4";
+import { createOverlay } from "./overlay.js?v=track4";
+import { createAudioRadar } from "./audio-radar.js?v=track4";
+import { openToolWindow } from "./popout.js?v=track4";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -105,6 +105,8 @@ let frames = 0;
 let fpsTimer = performance.now();
 let lastTriggerAt = 0;
 let trigOnSince = 0;
+let trigWasOn = false;
+let trigPrevDist = Infinity;
 let loopStarted = false;
 
 tokenStatus.textContent = session?.tokenMasked || maskToken(session?.token || "—");
@@ -1080,18 +1082,16 @@ function triggerAimPoint(b) {
 }
 
 /**
- * Trigger aim point = same as tracking line (lastTarget), else box bone.
- * Leaving-only extrapolate: if enemy flees crosshair, push point to NOW so we
- * don't click after they're already off. Approaching peeks: no forward push
- * (that caused early shots).
+ * Trigger = tracking line point. On leave: predict to click-arrival time
+ * (det age + ~50ms HID/game) so we don't fire after they're off. Peek: raw only.
+ * Rising-edge: prefer shot on ENTER, not while exiting.
  */
 function triggerBestPoint() {
   const { w, h } = frameSize();
   if (!w || !h) return null;
   const now = performance.now();
   const ageMs = hitBoxesAt ? now - hitBoxesAt : 999;
-  // stale det → don't trust "still on" (that's the late-shot bug)
-  if (ageMs > 28) return null;
+  if (ageMs > 32) return null;
 
   const cx = w * 0.5;
   const cy = h * 0.5;
@@ -1129,29 +1129,31 @@ function triggerBestPoint() {
   const dx0 = x - cx;
   const dy0 = cfg.aim.ignoreY ? 0 : y - cy;
   const dist0 = Math.hypot(dx0, dy0);
-  const ageSec = ageMs / 1000;
 
-  // radial leave speed (px/s): >0 = fleeing center
   let leave = 0;
   if (dist0 > 1) {
     leave = (trackVx * dx0 + trackVy * dy0) / dist0;
   }
+  const distGrowing = dist0 > trigPrevDist + 1.2;
+  trigPrevDist = dist0;
 
+  const CLICK_AHEAD_MS = 50;
   let px = x;
   let py = y;
-  if (leave > 80) {
-    // already leaving — predict where they are NOW (blocks late click)
-    px = x + trackVx * ageSec;
-    py = y + trackVy * ageSec;
+  if (leave > 40 || distGrowing) {
+    const predSec = (ageMs + CLICK_AHEAD_MS) / 1000;
+    px = x + trackVx * predSec;
+    py = y + trackVy * predSec;
   }
-  // approaching / static: keep raw point (no early peek lead)
 
   const dx = px - cx;
   const dy = cfg.aim.ignoreY ? 0 : py - cy;
   const dist = Math.hypot(dx, dy);
+  const r = Math.max(1, cfg.triggerbot.hitRadius ?? 8);
 
-  // hard veto: fleeing fast past the reticle
-  if (leave > 700 && dist0 > 2) return { x: px, y: py, dist, cx, cy, leave, veto: true };
+  if ((leave > 450 || distGrowing) && dist > r * 0.5) {
+    return { x: px, y: py, dist, cx, cy, leave, veto: true };
+  }
 
   return { x: px, y: py, dist, cx, cy, leave, veto: false };
 }
@@ -1166,20 +1168,31 @@ function csCrosshairOnEnemy() {
 function tickTriggerbot() {
   updateTrigStatus();
   if (!triggerActive() || !detectionOn()) {
+    trigWasOn = false;
     trigOnSince = 0;
     return;
   }
   const now = performance.now();
-  if (!csCrosshairOnEnemy()) {
+  const on = csCrosshairOnEnemy();
+  if (!on) {
+    trigWasOn = false;
     trigOnSince = 0;
     return;
   }
+
   const tap = Math.max(120, cfg.triggerbot.tapInterval ?? 280);
-  if (now - lastTriggerAt < tap) return;
+  const edge = !trigWasOn;
+  trigWasOn = true;
+
+  // first shot on enter; later pestka only while still predicted-on
+  if (edge) {
+    if (now - lastTriggerAt < 45) return;
+  } else if (now - lastTriggerAt < tap) {
+    return;
+  }
   if (!serialConnected()) return;
-  // last-chance recheck after tap wait window
   if (!csCrosshairOnEnemy()) {
-    trigOnSince = 0;
+    trigWasOn = false;
     return;
   }
   lastTriggerAt = now;
