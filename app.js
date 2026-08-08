@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=track6";
+} from "./utils.js?v=track7";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -16,10 +16,10 @@ import {
   serialConnected,
   serialSupported,
   testClick,
-} from "./hid.js?v=track6";
-import { createOverlay } from "./overlay.js?v=track6";
-import { createAudioRadar } from "./audio-radar.js?v=track6";
-import { openToolWindow } from "./popout.js?v=track6";
+} from "./hid.js?v=track7";
+import { createOverlay } from "./overlay.js?v=track7";
+import { createAudioRadar } from "./audio-radar.js?v=track7";
+import { openToolWindow } from "./popout.js?v=track7";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -107,6 +107,9 @@ let lastTriggerAt = 0;
 let trigOnSince = 0;
 let trigWasOn = false;
 let trigPrevDist = Infinity;
+/** Hysteresis latch — stops 1-frame flicker from cancelling the shot. */
+let trigHystOn = false;
+let trigTickAt = 0;
 let loopStarted = false;
 let rvfcArmed = false;
 
@@ -1063,9 +1066,9 @@ function updateTrigStatus() {
   const { h } = frameSize();
   const r = triggerHitRadius(h);
   if (cfg.triggerbot.type === "always") {
-    const p = triggerBestPoint();
+    const p = triggerBestPoint(false);
     if (p?.veto) trigStatus.textContent = "leave";
-    else if (p && p.dist <= r) trigStatus.textContent = `FIRE ${p.dist | 0}px`;
+    else if (p && triggerOnFromPoint(p, r, false)) trigStatus.textContent = `FIRE ${p.dist | 0}px`;
     else if (p) trigStatus.textContent = `${p.dist | 0}px`;
     else trigStatus.textContent = "always";
     return;
@@ -1075,9 +1078,9 @@ function updateTrigStatus() {
     return;
   }
   {
-    const p = triggerBestPoint();
+    const p = triggerBestPoint(false);
     if (p?.veto) trigStatus.textContent = "leave";
-    else if (p && p.dist <= r) trigStatus.textContent = `FIRE ${p.dist | 0}px`;
+    else if (p && triggerOnFromPoint(p, r, false)) trigStatus.textContent = `FIRE ${p.dist | 0}px`;
     else if (p) trigStatus.textContent = `KEY↓ ${p.dist | 0}px`;
     else trigStatus.textContent = "KEY↓";
   }
@@ -1136,16 +1139,18 @@ function triggerHitRadius(h) {
 }
 
 /**
- * Trigger = tracking line point.
- * Enter-ahead: fire when closing into radius (share/AI lag).
- * Leave-ahead: veto when exiting so we don't fire late.
+ * Trigger sample. commitDist=true only from tickTriggerbot (once/frame) —
+ * status/debug used to mutate trigPrevDist 3×/frame → random leave/enter.
  */
-function triggerBestPoint() {
+function triggerBestPoint(commitDist = false) {
   const { w, h } = frameSize();
   if (!w || !h) return null;
   const now = performance.now();
-  const ageMs = hitBoxesAt ? now - hitBoxesAt : 999;
-  if (ageMs > 70) return null;
+  const anchor = Math.max(hitBoxesAt || 0, lastDetectAt || 0);
+  const ageMs = anchor ? now - anchor : 999;
+  // gap between dual-worker hits often >70ms under load — was "nie strzela wcale"
+  const maxAge = Math.max(110, Math.min(180, (lastInferMs || 40) * 3.2));
+  if (ageMs > maxAge) return null;
 
   const cx = w * 0.5;
   const cy = h * 0.5;
@@ -1189,18 +1194,19 @@ function triggerBestPoint() {
   if (dist0 > 1) {
     leave = (trackVx * dx0 + trackVy * dy0) / dist0;
   }
-  const distGrowing = dist0 > trigPrevDist + 1.2;
-  const distClosing = dist0 < trigPrevDist - 0.8;
-  trigPrevDist = dist0;
+  const prev = trigPrevDist;
+  const distGrowing = Number.isFinite(prev) && dist0 > prev + 1.5;
+  const distClosing = Number.isFinite(prev) && dist0 < prev - 1.0;
+  if (commitDist) trigPrevDist = dist0;
 
   const CLICK_AHEAD_MS = 40;
-  const approaching = leave < -35 || distClosing;
-  const exiting = leave > 40 || distGrowing;
+  const approaching = leave < -40 || distClosing;
+  const exiting = leave > 120 && distGrowing;
 
   let px = x;
   let py = y;
-  if (approaching || exiting) {
-    const predSec = (ageMs * 0.35 + CLICK_AHEAD_MS) / 1000;
+  if (approaching || (leave > 40 && distGrowing)) {
+    const predSec = (Math.min(ageMs, 50) * 0.4 + CLICK_AHEAD_MS) / 1000;
     px = x + trackVx * predSec;
     py = y + trackVy * predSec;
   }
@@ -1210,32 +1216,58 @@ function triggerBestPoint() {
   const dist = Math.hypot(dx, dy);
   const r = triggerHitRadius(h);
 
-  // already leaving and still outside half-radius after predict → veto
-  if (exiting && !approaching && dist > r * 0.55) {
+  // only hard-veto clear exits — old r*0.55 veto blocked good peeks
+  if (exiting && dist > r) {
     return { x: px, y: py, dist, cx, cy, leave, veto: true };
   }
 
   return { x: px, y: py, dist, cx, cy, leave, veto: false };
 }
 
-function csCrosshairOnEnemy() {
-  const p = triggerBestPoint();
-  if (!p || p.veto) return false;
+function triggerOnFromPoint(p, r, commitHyst) {
+  if (!p || p.veto) {
+    if (commitHyst) trigHystOn = false;
+    return false;
+  }
+  const enterR = r;
+  const exitR = r * 1.5;
+  if (commitHyst) {
+    if (trigHystOn) {
+      if (p.dist > exitR) trigHystOn = false;
+    } else if (p.dist <= enterR) {
+      trigHystOn = true;
+    }
+    return trigHystOn;
+  }
+  // read-only preview for HUD
+  if (trigHystOn) return p.dist <= exitR;
+  return p.dist <= enterR;
+}
+
+function csCrosshairOnEnemy(commit = false) {
+  const p = triggerBestPoint(commit);
   const { h } = frameSize();
-  const r = triggerHitRadius(h);
-  // enter-ahead: predicted point already in radius counts as on
-  return p.dist <= r;
+  return triggerOnFromPoint(p, triggerHitRadius(h), commit);
 }
 
 function tickTriggerbot() {
-  updateTrigStatus();
+  const now = performance.now();
+  // applyDetect + rAF both call us — one commit/shot decision per ~frame
+  if (now - trigTickAt < 5) {
+    updateTrigStatus();
+    return;
+  }
+  trigTickAt = now;
+
   if (!triggerActive() || !detectionOn()) {
     trigWasOn = false;
     trigOnSince = 0;
+    trigHystOn = false;
+    updateTrigStatus();
     return;
   }
-  const now = performance.now();
-  const on = csCrosshairOnEnemy();
+  const on = csCrosshairOnEnemy(true);
+  updateTrigStatus();
   if (!on) {
     trigWasOn = false;
     trigOnSince = 0;
@@ -1246,17 +1278,12 @@ function tickTriggerbot() {
   const edge = !trigWasOn;
   trigWasOn = true;
 
-  // first shot on enter; later pestka only while still predicted-on
   if (edge) {
     if (now - lastTriggerAt < 28) return;
   } else if (now - lastTriggerAt < tap) {
     return;
   }
   if (!serialConnected()) return;
-  if (!csCrosshairOnEnemy()) {
-    trigWasOn = false;
-    return;
-  }
   lastTriggerAt = now;
   void sendClick(hidDevice, 1);
 }
@@ -1280,9 +1307,9 @@ function drawTriggerDebug(ctx, vw, vh) {
   ctx.moveTo(cx, cy - 6);
   ctx.lineTo(cx, cy + 6);
   ctx.stroke();
-  const p = triggerBestPoint();
+  const p = triggerBestPoint(false);
   if (p) {
-    ctx.fillStyle = p.dist <= r ? "#0f0" : "#f0f";
+    ctx.fillStyle = p.veto ? "#f80" : p.dist <= r ? "#0f0" : "#f0f";
     ctx.fillRect(p.x - 2, p.y - 2, 4, 4);
     ctx.strokeStyle = ctx.fillStyle;
     ctx.beginPath();
@@ -1339,11 +1366,8 @@ function applyDetectResult(data) {
     lastHitBoxes = boxes;
     lastHitBox = boxes[0];
     hitBoxesAt = performance.now();
-  } else if (!target) {
-    lastHitBoxes = [];
-    lastHitBox = null;
-    hitBoxesAt = 0;
   }
+  // don't wipe boxes on a single seek — that made trigger age-out / no-fire
 
   if (target) {
     missFrames = 0;
@@ -1444,12 +1468,15 @@ function applyDetectResult(data) {
     }
   } else {
     missFrames++;
-    const missLimit = workerKind === "ai" ? 0 : 12;
-    const dropAt = workerKind === "ai" ? 1 : 18;
+    // hold through 2–3 empty AI frames (dual pool hitch / conf flicker)
+    const missLimit = workerKind === "ai" ? 2 : 12;
+    const dropAt = workerKind === "ai" ? 3 : 18;
     if (missFrames <= missLimit && smoothTarget) {
-      lastTarget = smoothTarget;
-      trackVx *= 0.5;
-      trackVy *= 0.5;
+      const coast = liveAim() || smoothTarget;
+      lastTarget = coast;
+      smoothTarget = coast;
+      trackVx *= 0.85;
+      trackVy *= 0.85;
     } else if (missFrames > dropAt) {
       tracking = false;
       lastTarget = null;
@@ -1460,10 +1487,12 @@ function applyDetectResult(data) {
       velX = velY = 0;
       trackVx = trackVy = 0;
       rawPrev = null;
+      trigHystOn = false;
+      trigPrevDist = Infinity;
       targetStatus.textContent = warn || (matchCount ? `seek (${matchCount})` : "—");
     } else if (workerKind === "ai") {
-      lastTarget = null;
-      smoothTarget = null;
+      // still holding boxes; line may go null briefly without killing trigger age
+      lastTarget = smoothTarget;
       targetStatus.textContent = matchCount ? `seek (${matchCount})` : "—";
     }
   }
