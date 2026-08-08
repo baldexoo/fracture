@@ -241,24 +241,24 @@ function pickTarget(boxes, cx, cy, bone) {
     pool = bodies.length ? bodies : heads;
   }
 
-  // sticky to same target, but weak — strong sticky + flick = lose / orbit
-  const stickR = lock ? 90 : 0;
+  // weak sticky — strong stick lagged behind strafe reverses
+  const stickR = lock ? 40 : 0;
   const stickR2 = stickR * stickR;
 
   let best = null;
   let bestScore = Infinity;
   for (const b of pool) {
     const p = aimPoint(b, wantHead);
-    // body mode + head-only fallback already handled in aimPoint
     const dCross = (p.x - cx) * (p.x - cx) + (p.y - cy) * (p.y - cy);
-    let score = dCross / (0.3 + b.conf);
+    // primarily: closest to crosshair, then conf
+    let score = dCross / (0.35 + b.conf);
 
     if (lock && stickR2 > 0) {
       const dLock = (p.x - lock.x) * (p.x - lock.x) + (p.y - lock.y) * (p.y - lock.y);
-      if (dLock <= stickR2) score *= 0.5;
+      if (dLock <= stickR2) score *= 0.88; // mild — don't glue to old strafe side
     }
-    if (wantHead && p.head) score *= 0.7;
-    if (!wantHead && !b.head) score *= 0.7;
+    if (wantHead && p.head) score *= 0.75;
+    if (!wantHead && !b.head) score *= 0.75;
     if (score < bestScore) {
       bestScore = score;
       best = p;

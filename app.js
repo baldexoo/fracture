@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=trig11";
+} from "./utils.js?v=track1";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -16,10 +16,10 @@ import {
   serialConnected,
   serialSupported,
   testClick,
-} from "./hid.js?v=trig11";
-import { createOverlay } from "./overlay.js?v=trig11";
-import { createAudioRadar } from "./audio-radar.js?v=trig11";
-import { openToolWindow } from "./popout.js?v=trig11";
+} from "./hid.js?v=track1";
+import { createOverlay } from "./overlay.js?v=track1";
+import { createAudioRadar } from "./audio-radar.js?v=track1";
+import { openToolWindow } from "./popout.js?v=track1";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -1172,7 +1172,7 @@ function ensureWorker() {
   }
   workerKind = kind;
   aiReady = kind !== "ai";
-  worker = new Worker(kind === "ai" ? "./ai.worker.js?v=trig5" : "./color.worker.js?v=trig5");
+  worker = new Worker(kind === "ai" ? "./ai.worker.js?v=track1" : "./color.worker.js?v=trig11");
   worker.onmessage = (ev) => {
     const data = ev.data || {};
     if (data.type === "ready") {
@@ -1252,42 +1252,37 @@ function ensureWorker() {
       let ty = target.y;
 
       if (workerKind === "ai") {
-        // velocity from RAW detections only — never from smoothed line (that orbited)
-        if (rawPrev && now - rawPrev.t > 10 && now - rawPrev.t < 400) {
+        // velocity from RAW dets — snap on reverse so line/aim don't keep old strafe
+        if (rawPrev && now - rawPrev.t > 8 && now - rawPrev.t < 350) {
           const jump = Math.hypot(target.x - rawPrev.x, target.y - rawPrev.y);
-          if (jump > 120) {
+          if (jump > 140) {
             trackVx = 0;
             trackVy = 0;
           } else {
             const dt = (now - rawPrev.t) / 1000;
             const vx = (target.x - rawPrev.x) / dt;
             const vy = (target.y - rawPrev.y) / dt;
-            trackVx = trackVx * 0.4 + vx * 0.6;
-            trackVy = trackVy * 0.4 + vy * 0.6;
+            const reverse = trackVx * vx + trackVy * vy < 0;
+            if (reverse || jump > 28) {
+              // direction change / flick — instant retarget, no blend lag
+              trackVx = vx;
+              trackVy = vy;
+            } else {
+              trackVx = trackVx * 0.2 + vx * 0.8;
+              trackVy = trackVy * 0.2 + vy * 0.8;
+            }
             const sp = Math.hypot(trackVx, trackVy);
-            if (sp > 1800) {
-              trackVx = (trackVx / sp) * 1800;
-              trackVy = (trackVy / sp) * 1800;
+            if (sp > 2200) {
+              trackVx = (trackVx / sp) * 2200;
+              trackVy = (trackVy / sp) * 2200;
             }
           }
         }
         rawPrev = { x: target.x, y: target.y, t: now };
 
-        // lead = how late this box is (capture→now), capped so it can't overshoot hard
-        const ageSec = Math.min(0.095, Math.max(0.02, (now - detectSentAt) / 1000));
-        let lx = trackVx * ageSec;
-        let ly = trackVy * ageSec;
-        const lead = Math.hypot(lx, ly);
-        const maxLead = 22; // px — catch-up without flying past model
-        if (lead > maxLead) {
-          lx *= maxLead / lead;
-          ly *= maxLead / lead;
-        }
-        tx = target.x + lx;
-        ty = target.y + ly;
-
-        // AI line = led raw point (no laggy blend)
-        smoothTarget = { x: tx, y: ty };
+        // Line = RAW bone NOW (no lead). Lead only for mouse move below.
+        // Lead on the drawn line caused "thinking" lag on strafe reverse.
+        smoothTarget = { x: target.x, y: target.y };
         velX = trackVx / 60;
         velY = trackVy / 60;
       } else if (!smoothTarget) {
@@ -1332,12 +1327,13 @@ function ensureWorker() {
       }
     } else {
       missFrames++;
-      const missLimit = workerKind === "ai" ? 2 : 12;
-      const dropAt = workerKind === "ai" ? 4 : 18;
+      // AI: drop line immediately on miss — don't hold stale point through reverse
+      const missLimit = workerKind === "ai" ? 0 : 12;
+      const dropAt = workerKind === "ai" ? 1 : 18;
       if (missFrames <= missLimit && smoothTarget) {
         lastTarget = smoothTarget;
-        trackVx *= 0.7;
-        trackVy *= 0.7;
+        trackVx *= 0.5;
+        trackVy *= 0.5;
       } else if (missFrames > dropAt) {
         tracking = false;
         lastTarget = null;
@@ -1350,14 +1346,20 @@ function ensureWorker() {
         rawPrev = null;
         targetStatus.textContent = warn || (matchCount ? `seek (${matchCount})` : "—");
       } else if (workerKind === "ai") {
+        lastTarget = null;
+        smoothTarget = null;
         targetStatus.textContent = matchCount ? `seek (${matchCount})` : "—";
       }
     }
 
     if (aimActive() && lastTarget && detectionOn() && serialConnected()) {
       const { w, h } = frameSize();
-      let mx = lastTarget.x - w / 2;
-      let my = cfg.aim.ignoreY ? 0 : lastTarget.y - h / 2;
+      // small lead only for HID move (line stays raw)
+      const ageSec = Math.min(0.04, Math.max(0, (performance.now() - detectSentAt) / 1000));
+      let ax = lastTarget.x + trackVx * ageSec * 0.35;
+      let ay = lastTarget.y + trackVy * ageSec * 0.35;
+      let mx = ax - w / 2;
+      let my = cfg.aim.ignoreY ? 0 : ay - h / 2;
       if (Math.abs(mx) < 2) mx = 0;
       if (Math.abs(my) < 2) my = 0;
       const speed = cfg.aim.speed / 100;
@@ -1416,16 +1418,11 @@ function loop() {
 
     const radius = fovRadiusPx(vw, vh);
 
-    // between inferences: nudge line with RAW track velocity (half-rate = no overshoot spiral)
-    if (workerBusy && lastTarget && (trackVx !== 0 || trackVy !== 0)) {
-      const sp = Math.hypot(trackVx, trackVy);
-      if (sp > 30 && sp < 1600) {
-        lastTarget = {
-          x: lastTarget.x + trackVx * dt * 0.45,
-          y: lastTarget.y + trackVy * dt * 0.45,
-        };
-        smoothTarget = lastTarget;
-      }
+    // DO NOT coast the line between inferences — old velocity keeps going after
+    // strafe reverse and looks like "thinking". Line jumps on each fresh det only.
+    if (workerBusy) {
+      trackVx *= 0.92;
+      trackVy *= 0.92;
     }
 
     if (cfg.aim.enabled) {
