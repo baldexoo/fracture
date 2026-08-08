@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=track8";
+} from "./utils.js?v=track9";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -16,10 +16,10 @@ import {
   serialConnected,
   serialSupported,
   testClick,
-} from "./hid.js?v=track8";
-import { createOverlay } from "./overlay.js?v=track8";
-import { createAudioRadar } from "./audio-radar.js?v=track8";
-import { openToolWindow } from "./popout.js?v=track8";
+} from "./hid.js?v=track9";
+import { createOverlay } from "./overlay.js?v=track9";
+import { createAudioRadar } from "./audio-radar.js?v=track9";
+import { openToolWindow } from "./popout.js?v=track9";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -1673,6 +1673,35 @@ function syncPreviewMode() {
   video.classList.toggle("is-hidden", !ai);
 }
 
+/**
+ * Pin HUD canvas to the same letterboxed rect as <video object-fit:contain>.
+ * Without this, canvas fill ≠ video content → cyan crosshair drifts off CS center.
+ */
+function syncHudToVideo(vw, vh) {
+  const rw = video.clientWidth || 0;
+  const rh = video.clientHeight || 0;
+  if (!rw || !rh || !vw || !vh) return 1;
+  const fit = Math.min(rw / vw, rh / vh);
+  const dispW = vw * fit;
+  const dispH = vh * fit;
+  const left = (rw - dispW) * 0.5;
+  const top = (rh - dispH) * 0.5;
+  canvas.style.left = `${left}px`;
+  canvas.style.top = `${top}px`;
+  canvas.style.width = `${dispW}px`;
+  canvas.style.height = `${dispH}px`;
+
+  const hudScale = Math.min(1, 1280 / Math.max(vw, vh));
+  const hw = Math.max(2, (vw * hudScale) | 0);
+  const hh = Math.max(2, (vh * hudScale) | 0);
+  if (canvas.width !== hw || canvas.height !== hh) {
+    canvas.width = hw;
+    canvas.height = hh;
+  }
+  ctx.setTransform(hudScale, 0, 0, hudScale, 0, 0);
+  return hudScale;
+}
+
 function loop() {
   if (!video.srcObject) {
     requestAnimationFrame(loop);
@@ -1694,15 +1723,7 @@ function loop() {
   loopPrevT = now;
 
   if (ai) {
-    // HUD at ≤1280 — full video-pixel canvas (1440p+) stalls main thread → stream looks lagged
-    const hudScale = Math.min(1, 1280 / Math.max(vw, vh));
-    const hw = Math.max(2, (vw * hudScale) | 0);
-    const hh = Math.max(2, (vh * hudScale) | 0);
-    if (canvas.width !== hw || canvas.height !== hh) {
-      canvas.width = hw;
-      canvas.height = hh;
-    }
-    ctx.setTransform(hudScale, 0, 0, hudScale, 0, 0);
+    const hudScale = syncHudToVideo(vw, vh);
     ctx.clearRect(0, 0, vw, vh);
 
     const radius = fovRadiusPx(vw, vh);
@@ -1731,7 +1752,6 @@ function loop() {
     drawTriggerDebug(ctx, vw, vh);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
 
-    // rvfc already kicks on each capture frame — second kick here doubles bitmap work
     if (!rvfcArmed) kickAiDetect();
   } else {
     // color path: composite video onto canvas (needs pixels for scan)
