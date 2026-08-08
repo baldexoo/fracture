@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=trig6";
+} from "./utils.js?v=trig7";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -16,10 +16,10 @@ import {
   serialConnected,
   serialSupported,
   testClick,
-} from "./hid.js?v=trig6";
-import { createOverlay } from "./overlay.js?v=trig6";
-import { createAudioRadar } from "./audio-radar.js?v=trig6";
-import { openToolWindow } from "./popout.js?v=trig6";
+} from "./hid.js?v=trig7";
+import { createOverlay } from "./overlay.js?v=trig7";
+import { createAudioRadar } from "./audio-radar.js?v=trig7";
+import { openToolWindow } from "./popout.js?v=trig7";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -78,10 +78,12 @@ let workerBusy = false;
 let aiReady = false;
 let lastTarget = null;
 let smoothTarget = null;
-/** Raw enemy boxes under CS crosshair (not the aim-line tip / lead). */
+/** Raw enemy boxes for trigger — never the aim-line tip / lead. */
 let lastHitBox = null;
 /** @type {{x1:number,y1:number,x2:number,y2:number,head?:boolean}[]} */
 let lastHitBoxes = [];
+/** When lastHitBoxes were captured (performance.now). */
+let hitBoxesAt = 0;
 let missFrames = 0;
 let lastDebugPts = null;
 let detectEvery = 0;
@@ -1035,52 +1037,69 @@ function frameSize() {
   return { w: canvas.width, h: canvas.height };
 }
 
-/** Expand tiny head boxes down over torso — CS crosshair often sits on chest. */
+/** Mild torso pad for head boxes — big expand caused late strafe shots. */
 function triggerVolume(b) {
-  const bw = b.x2 - b.x1;
-  const bh = b.y2 - b.y1;
-  const tall = bh / Math.max(1, bw) > 2.1;
+  const bw = Math.max(1, b.x2 - b.x1);
+  const bh = Math.max(1, b.y2 - b.y1);
+  const tall = bh / bw > 2.1;
   if (b.head && !tall) {
     return {
-      x1: b.x1 - bw * 0.2,
-      x2: b.x2 + bw * 0.2,
+      x1: b.x1 - bw * 0.08,
+      x2: b.x2 + bw * 0.08,
       y1: b.y1,
-      y2: b.y1 + bh * 3.4,
+      y2: b.y1 + bh * 1.85,
     };
   }
   return b;
 }
 
 /**
- * CS crosshair = frame center.
- * Hit if center inside any enemy box OR raw aim point near center.
+ * CS crosshair = frame center, vs boxes extrapolated to NOW (kills late strafe fire).
+ * Stale dets / led aim-line tip are ignored.
  */
 function csCrosshairOnEnemy() {
   const { w, h } = frameSize();
   if (!w || !h) return false;
-  const cx = w * 0.5;
-  const cy = h * 0.5;
-  const pad = cfg.triggerbot.hitRadius ?? 14;
-
   const list = lastHitBoxes.length
     ? lastHitBoxes
     : lastHitBox
       ? [lastHitBox]
       : [];
+  if (!list.length || !hitBoxesAt) return false;
+
+  const now = performance.now();
+  // capture→infer lag already in detectSentAt; boxes timestamped on result
+  const ageMs = now - hitBoxesAt;
+  if (ageMs > 70) return false; // too old — enemy likely strafed off
+
+  const ageSec = ageMs / 1000;
+  // push box with raw track velocity so we test where enemy is NOW, not in the old frame
+  const ex = trackVx * ageSec;
+  const ey = trackVy * ageSec;
+
+  const cx = w * 0.5;
+  const cy = h * 0.5;
+  const pad = cfg.triggerbot.hitRadius ?? 14;
+
   for (const raw of list) {
     const box = triggerVolume(raw);
-    const x1 = box.x1 - pad;
-    const x2 = box.x2 + pad;
-    const y1 = cfg.aim.ignoreY ? -1e9 : box.y1 - pad;
-    const y2 = cfg.aim.ignoreY ? 1e9 : box.y2 + pad;
-    if (cx >= x1 && cx <= x2 && cy >= y1 && cy <= y2) return true;
-  }
+    const x1 = box.x1 + ex - pad;
+    const x2 = box.x2 + ex + pad;
+    const y1 = cfg.aim.ignoreY ? -1e9 : box.y1 + ey - pad;
+    const y2 = cfg.aim.ignoreY ? 1e9 : box.y2 + ey + pad;
+    if (cx < x1 || cx > x2 || cy < y1 || cy > y2) continue;
 
-  // fallback: bone point (no lead) near crosshair — covers box mapping misses
-  if (lastTarget) {
-    const dx = lastTarget.x - cx;
-    const dy = cfg.aim.ignoreY ? 0 : lastTarget.y - cy;
-    if (Math.hypot(dx, dy) <= pad + 8) return true;
+    // leaving gate: box center fleeing crosshair → don't shoot
+    const bx = (box.x1 + box.x2) * 0.5 + ex;
+    const by = (box.y1 + box.y2) * 0.5 + ey;
+    const toBx = bx - cx;
+    const toBy = cfg.aim.ignoreY ? 0 : by - cy;
+    const dist = Math.hypot(toBx, toBy);
+    if (dist > 2) {
+      const leave = (trackVx * toBx + trackVy * toBy) / dist; // px/s away from center
+      if (leave > 450) continue; // already strafing off hard
+    }
+    return true;
   }
   return false;
 }
@@ -1099,6 +1118,11 @@ function tickTriggerbot() {
   if (!trigOnSince) trigOnSince = now;
   const delay = cfg.triggerbot.delay ?? 40;
   if (now - trigOnSince < delay) return;
+  // final check right before click (delay window can go stale)
+  if (!csCrosshairOnEnemy()) {
+    trigOnSince = 0;
+    return;
+  }
   if (now - lastTriggerAt < 90) return;
   if (!serialConnected()) return;
   lastTriggerAt = now;
@@ -1155,6 +1179,12 @@ function ensureWorker() {
     if (Array.isArray(boxes) && boxes.length) {
       lastHitBoxes = boxes;
       lastHitBox = boxes[0];
+      hitBoxesAt = performance.now();
+    } else if (!target) {
+      // no dets this frame — drop trigger boxes immediately (don't coast into strafe)
+      lastHitBoxes = [];
+      lastHitBox = null;
+      hitBoxesAt = 0;
     }
 
     if (target) {
@@ -1172,8 +1202,9 @@ function ensureWorker() {
         ) {
           lastHitBox = { x1: target.x1, y1: target.y1, x2: target.x2, y2: target.y2 };
           lastHitBoxes = [lastHitBox];
+          hitBoxesAt = now;
         } else {
-          const r = 10;
+          const r = 8;
           lastHitBox = {
             x1: target.x - r,
             y1: target.y - r,
@@ -1181,6 +1212,7 @@ function ensureWorker() {
             y2: target.y + r,
           };
           lastHitBoxes = [lastHitBox];
+          hitBoxesAt = now;
         }
       }
 
@@ -1280,6 +1312,7 @@ function ensureWorker() {
         smoothTarget = null;
         lastHitBox = null;
         lastHitBoxes = [];
+        hitBoxesAt = 0;
         velX = velY = 0;
         trackVx = trackVy = 0;
         rawPrev = null;

@@ -20,8 +20,8 @@ export const DEFAULTS = {
     enabled: false,
     type: "hold",
     key: "KeyX",
-    delay: 40,
-    hitRadius: 14,
+    delay: 10,
+    hitRadius: 10,
     prediction: 0, // legacy
   },
   canvasScale: 0.5,

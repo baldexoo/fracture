@@ -183,9 +183,9 @@
                 </div>
               </div>
               <p style="margin:10px 0 0;color:#666;font-size:11px;text-transform:lowercase;line-height:1.35">
-                strzela gdy środek share = celownik CS jest na jakimkolwiek boxie wroga.
-                panel musi mieć fokus (albo type=always). nie używaj alt — zjada go przeglądarka.
-                status: trig KEY↓ = klawisz dochodzi.
+                strzela tylko gdy celownik CS jest na boxie TERAZ (extrapolacja + max 70ms świeżość).
+                duży delay / hit radius = późne strzały przy strafe — trzymaj nisko (0–20).
+                type always albo key; panel z fokusem.
               </p>
             </div>
           </div>
@@ -294,6 +294,6 @@
 
     <div id="magnifier"><canvas id="magnifierCanvas" width="120" height="120"></canvas></div>
 
-    <script type="module" src="./app.js?v=trig6"></script>
+    <script type="module" src="./app.js?v=trig7"></script>
   </body>
 </html>
