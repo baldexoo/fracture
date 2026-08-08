@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=track16";
+} from "./utils.js?v=track17";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -16,10 +16,10 @@ import {
   serialConnected,
   serialSupported,
   testClick,
-} from "./hid.js?v=track16";
-import { createOverlay } from "./overlay.js?v=track16";
-import { createAudioRadar } from "./audio-radar.js?v=track16";
-import { openToolWindow } from "./popout.js?v=track16";
+} from "./hid.js?v=track17";
+import { createOverlay } from "./overlay.js?v=track17";
+import { createAudioRadar } from "./audio-radar.js?v=track17";
+import { openToolWindow } from "./popout.js?v=track17";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -110,6 +110,11 @@ let trigPrevDist = Infinity;
 /** Hysteresis latch — stops 1-frame flicker from cancelling the shot. */
 let trigHystOn = false;
 let trigTickAt = 0;
+/** Aim assist state (humanize — not trigger). */
+let aimPrevErr = 0;
+let aimOutX = 0;
+let aimOutY = 0;
+let aimAwayUntil = 0;
 let loopStarted = false;
 let rvfcArmed = false;
 
@@ -1071,6 +1076,85 @@ function aimActive() {
   return holdPressed;
 }
 
+/**
+ * Human-like assist: weak on wide flicks, stronger near bone, EMA + step cap.
+ * Infers user flick from error delta (no raw mouse in CS focus).
+ * Trigger path untouched.
+ */
+function aimAssistMove(errX, errY) {
+  const { w, h } = frameSize();
+  const fovR = Math.max(28, fovRadiusPx(w, h));
+  const err = Math.hypot(errX, errY);
+  const speed = Math.max(0, Math.min(1, (cfg.aim.speed || 0) / 100));
+  const now = performance.now();
+
+  if (err < 2.5) {
+    aimPrevErr = err;
+    aimOutX *= 0.5;
+    aimOutY *= 0.5;
+    if (Math.abs(aimOutX) < 0.4) aimOutX = 0;
+    if (Math.abs(aimOutY) < 0.4) aimOutY = 0;
+    return { dx: 0, dy: 0 };
+  }
+
+  const t = Math.min(1, err / fovR);
+  let gain = speed * (1 - t) * (1 - t);
+  if (err > fovR * 0.85) gain *= 0.15;
+
+  const closing = aimPrevErr - err;
+  if (err > aimPrevErr + 4 || now < aimAwayUntil) {
+    // looking away / overshoot — don't yank back
+    if (err > aimPrevErr + 4) aimAwayUntil = now + 90;
+    gain = 0;
+  } else if (closing > 6) {
+    // user already flicking toward target — only finish, don't double
+    gain *= 0.55;
+  }
+  aimPrevErr = err;
+
+  let dx = errX * gain;
+  let dy = errY * gain;
+
+  const maxStep = 6 + speed * 10; // ~6–16 px/tick
+  const step = Math.hypot(dx, dy);
+  if (step > maxStep) {
+    const s = maxStep / step;
+    dx *= s;
+    dy *= s;
+  }
+
+  aimOutX = aimOutX * 0.65 + dx * 0.35;
+  aimOutY = aimOutY * 0.65 + dy * 0.35;
+
+  if (Math.abs(aimOutX) < 0.35) aimOutX = 0;
+  if (Math.abs(aimOutY) < 0.35) aimOutY = 0;
+
+  return { dx: aimOutX, dy: aimOutY };
+}
+
+/** Apply assist toward current lock (detect or stale liveAim). */
+function tickAimAssist() {
+  if (!aimActive() || !lastTarget || !detectionOn() || !serialConnected()) {
+    aimOutX *= 0.7;
+    aimOutY *= 0.7;
+    return;
+  }
+  const { w, h } = frameSize();
+  const live = liveAim();
+  const { x: cx, y: cy } = aimOrigin(w, h);
+  const ageSec = Math.min(0.04, Math.max(0, (performance.now() - detectSentAt) / 1000));
+  const ax = (live?.x ?? lastTarget.x) + trackVx * ageSec * 0.25;
+  const ay =
+    (live?.y ?? lastTarget.y) +
+    trackVy * ageSec * 0.25 +
+    (cfg.aim.ignoreY ? 0 : cfg.aim.offset);
+  let errX = ax - cx;
+  let errY = cfg.aim.ignoreY ? 0 : ay - cy;
+  const { dx, dy } = aimAssistMove(errX, errY);
+  if (dx === 0 && dy === 0) return;
+  void sendMove(hidDevice, dx, dy);
+}
+
 function triggerActive() {
   if (!cfg.triggerbot.enabled) return false;
   if (cfg.triggerbot.type === "always") return true;
@@ -1645,18 +1729,10 @@ function applyDetectResult(data) {
   }
 
   if (aimActive() && lastTarget && detectionOn() && serialConnected()) {
-    const { w, h } = frameSize();
-    const live = liveAim();
-    const { x: cx, y: cy } = aimOrigin(w, h);
-    const ageSec = Math.min(0.04, Math.max(0, (performance.now() - detectSentAt) / 1000));
-    let ax = (live?.x ?? lastTarget.x) + trackVx * ageSec * 0.25;
-    let ay = (live?.y ?? lastTarget.y) + trackVy * ageSec * 0.25;
-    let mx = ax - cx;
-    let my = cfg.aim.ignoreY ? 0 : ay - cy;
-    if (Math.abs(mx) < 2) mx = 0;
-    if (Math.abs(my) < 2) my = 0;
-    const speed = cfg.aim.speed / 100;
-    void sendMove(hidDevice, mx * speed, my * speed + (cfg.aim.ignoreY ? 0 : cfg.aim.offset));
+    tickAimAssist();
+  } else {
+    aimOutX *= 0.7;
+    aimOutY *= 0.7;
   }
 
   tickTriggerbot();
@@ -1985,6 +2061,16 @@ function loop() {
     fpsStatus.textContent = String(frames);
     frames = 0;
     fpsTimer = now;
+  }
+  // finish between inferences when detect is stale (smoother than AI-only ticks)
+  if (
+    aimActive() &&
+    lastTarget &&
+    lastDetectAt &&
+    now - lastDetectAt > 35 &&
+    now - lastDetectAt < 180
+  ) {
+    tickAimAssist();
   }
   tickTriggerbot();
   requestAnimationFrame(loop);
