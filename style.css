@@ -280,8 +280,9 @@ select {
   inset: 0;
   width: 100%;
   height: 100%;
+  /* no object-fit — bitmap is the full painted frame (video+HUD), CSS just letterboxes via contain-like sizing below */
   object-fit: contain;
-  background: transparent;
+  background: #050505;
   pointer-events: none;
 }
 

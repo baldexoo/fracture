@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=track12";
+} from "./utils.js?v=track13";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -16,10 +16,10 @@ import {
   serialConnected,
   serialSupported,
   testClick,
-} from "./hid.js?v=track12";
-import { createOverlay } from "./overlay.js?v=track12";
-import { createAudioRadar } from "./audio-radar.js?v=track12";
-import { openToolWindow } from "./popout.js?v=track12";
+} from "./hid.js?v=track13";
+import { createOverlay } from "./overlay.js?v=track13";
+import { createAudioRadar } from "./audio-radar.js?v=track13";
+import { openToolWindow } from "./popout.js?v=track13";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -1672,8 +1672,9 @@ function fovRadiusPx(bw, bh) {
 }
 
 function syncPreviewMode() {
-  const ai = workerKind === "ai";
-  video.classList.toggle("is-hidden", !ai);
+  // AI: paint video into canvas (1 layer) so HUD center == picture center.
+  // Separate <video>+<canvas> with object-fit drifts — cyan left of CS crosshair.
+  video.classList.add("is-hidden");
 }
 
 function loop() {
@@ -1697,19 +1698,23 @@ function loop() {
   loopPrevT = now;
 
   if (ai) {
-    // clear track9 inline box (stuck in long-lived tab)
     if (canvas.style.left || canvas.style.top || canvas.style.width || canvas.style.height) {
       canvas.style.left = "";
       canvas.style.top = "";
       canvas.style.width = "";
       canvas.style.height = "";
     }
-    if (canvas.width !== vw || canvas.height !== vh) {
-      canvas.width = vw;
-      canvas.height = vh;
+    // One layer: video pixels + HUD. Center of picture == center of HUD. Always.
+    const fit = Math.min(1, 1600 / Math.max(vw, vh));
+    const cw = Math.max(2, (vw * fit) | 0);
+    const ch = Math.max(2, (vh * fit) | 0);
+    if (canvas.width !== cw || canvas.height !== ch) {
+      canvas.width = cw;
+      canvas.height = ch;
     }
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, vw, vh);
+    ctx.drawImage(video, 0, 0, cw, ch);
+    ctx.setTransform(fit, 0, 0, fit, 0, 0);
 
     const origin = aimOrigin(vw, vh);
     const radius = fovRadiusPx(vw, vh);
@@ -1728,14 +1733,15 @@ function loop() {
     if (lastTarget) {
       const live = liveAim(now) || lastTarget;
       ctx.strokeStyle = "#fff";
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 1.5 / fit;
       ctx.beginPath();
       ctx.moveTo(origin.x, origin.y);
       ctx.lineTo(live.x, live.y);
       ctx.stroke();
-      ctx.lineWidth = 1;
+      ctx.lineWidth = 1 / fit;
     }
     drawTriggerDebug(ctx, vw, vh);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
 
     if (!rvfcArmed) kickAiDetect();
   } else {
