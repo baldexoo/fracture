@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=track4";
+} from "./utils.js?v=track5";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -16,10 +16,10 @@ import {
   serialConnected,
   serialSupported,
   testClick,
-} from "./hid.js?v=track4";
-import { createOverlay } from "./overlay.js?v=track4";
-import { createAudioRadar } from "./audio-radar.js?v=track4";
-import { openToolWindow } from "./popout.js?v=track4";
+} from "./hid.js?v=track5";
+import { createOverlay } from "./overlay.js?v=track5";
+import { createAudioRadar } from "./audio-radar.js?v=track5";
+import { openToolWindow } from "./popout.js?v=track5";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -108,6 +108,22 @@ let trigOnSince = 0;
 let trigWasOn = false;
 let trigPrevDist = Infinity;
 let loopStarted = false;
+let rvfcArmed = false;
+
+function armVideoFrameDetect() {
+  if (rvfcArmed) return;
+  if (typeof video.requestVideoFrameCallback !== "function") return;
+  rvfcArmed = true;
+  const onFrame = () => {
+    if (!video.srcObject) {
+      rvfcArmed = false;
+      return;
+    }
+    kickAiDetect();
+    video.requestVideoFrameCallback(onFrame);
+  };
+  video.requestVideoFrameCallback(onFrame);
+}
 
 tokenStatus.textContent = session?.tokenMasked || maskToken(session?.token || "—");
 
@@ -700,7 +716,9 @@ async function ensureMicPermission() {
 
 function displayMediaOpts(wantAudio) {
   const opts = {
-    video: { frameRate: { ideal: 60 } },
+    video: {
+      frameRate: { ideal: 60, max: 60 },
+    },
     selfBrowserSurface: "exclude",
     preferCurrentTab: false,
   };
@@ -767,6 +785,7 @@ function stopCurrentStream() {
     }
   }
   stream = null;
+  rvfcArmed = false;
 }
 
 async function bindShareStream(media, meta = {}) {
@@ -781,7 +800,19 @@ async function bindShareStream(media, meta = {}) {
   await video.play();
   placeholder.classList.add("hidden");
 
-  const vset = vtracks[0]?.getSettings?.() || {};
+  const vt = vtracks[0];
+  try {
+    vt.contentHint = "motion";
+  } catch {
+    /* ignore */
+  }
+  try {
+    await vt.applyConstraints({ frameRate: { ideal: 60, max: 60 } });
+  } catch {
+    /* ignore */
+  }
+
+  const vset = vt?.getSettings?.() || {};
   const surface = vset.displaySurface || "?";
   const atracks = stream.getAudioTracks();
   console.info("[share]", {
@@ -850,6 +881,7 @@ async function bindShareStream(media, meta = {}) {
   });
 
   ensureWorker();
+  armVideoFrameDetect();
   if (!loopStarted) {
     loopStarted = true;
     loop();
@@ -1082,8 +1114,22 @@ function triggerAimPoint(b) {
 }
 
 /**
+ * Dead-reckon aim/trigger between YOLO frames (cap ~45ms) — cuts perceived lag
+ * without coasting after a miss.
+ */
+function liveAim(now = performance.now()) {
+  if (!lastTarget || !lastDetectAt) return lastTarget;
+  const age = Math.min(0.045, Math.max(0, (now - lastDetectAt) / 1000));
+  if (age < 0.004) return lastTarget;
+  return {
+    x: lastTarget.x + trackVx * age * 0.6,
+    y: lastTarget.y + trackVy * age * 0.6,
+  };
+}
+
+/**
  * Trigger = tracking line point. On leave: predict to click-arrival time
- * (det age + ~50ms HID/game) so we don't fire after they're off. Peek: raw only.
+ * (det age + ~35ms HID/game) so we don't fire after they're off. Peek: raw only.
  * Rising-edge: prefer shot on ENTER, not while exiting.
  */
 function triggerBestPoint() {
@@ -1091,16 +1137,17 @@ function triggerBestPoint() {
   if (!w || !h) return null;
   const now = performance.now();
   const ageMs = hitBoxesAt ? now - hitBoxesAt : 999;
-  if (ageMs > 32) return null;
+  if (ageMs > 55) return null;
 
   const cx = w * 0.5;
   const cy = h * 0.5;
 
   let x;
   let y;
-  if (lastTarget) {
-    x = lastTarget.x;
-    y = lastTarget.y;
+  const live = liveAim(now);
+  if (live) {
+    x = live.x;
+    y = live.y;
   } else {
     const list = lastHitBoxes.length
       ? lastHitBoxes
@@ -1137,7 +1184,7 @@ function triggerBestPoint() {
   const distGrowing = dist0 > trigPrevDist + 1.2;
   trigPrevDist = dist0;
 
-  const CLICK_AHEAD_MS = 50;
+  const CLICK_AHEAD_MS = 35;
   let px = x;
   let py = y;
   if (leave > 40 || distGrowing) {
@@ -1186,7 +1233,7 @@ function tickTriggerbot() {
 
   // first shot on enter; later pestka only while still predicted-on
   if (edge) {
-    if (now - lastTriggerAt < 45) return;
+    if (now - lastTriggerAt < 28) return;
   } else if (now - lastTriggerAt < tap) {
     return;
   }
@@ -1408,9 +1455,10 @@ function applyDetectResult(data) {
 
   if (aimActive() && lastTarget && detectionOn() && serialConnected()) {
     const { w, h } = frameSize();
+    const live = liveAim();
     const ageSec = Math.min(0.04, Math.max(0, (performance.now() - detectSentAt) / 1000));
-    let ax = lastTarget.x + trackVx * ageSec * 0.35;
-    let ay = lastTarget.y + trackVy * ageSec * 0.35;
+    let ax = (live?.x ?? lastTarget.x) + trackVx * ageSec * 0.25;
+    let ay = (live?.y ?? lastTarget.y) + trackVy * ageSec * 0.25;
     let mx = ax - w / 2;
     let my = cfg.aim.ignoreY ? 0 : ay - h / 2;
     if (Math.abs(mx) < 2) mx = 0;
@@ -1434,9 +1482,15 @@ function kickAiDetect() {
   if (!vw || !vh) return;
 
   const radius = fovRadiusPx(vw, vh);
-  const cx = vw >> 1;
-  const cy = vh >> 1;
-  const side = Math.max(96, Math.min(vw, vh, radius * 2));
+  // lock: crop around target (denser pixels) + slightly tighter side
+  let cx = vw >> 1;
+  let cy = vh >> 1;
+  let side = Math.max(96, Math.min(vw, vh, radius * 2));
+  if (lastTarget && tracking) {
+    cx = lastTarget.x | 0;
+    cy = lastTarget.y | 0;
+    side = Math.max(144, Math.min(side, (side * 0.78) | 0));
+  }
   const x0 = Math.max(0, Math.min(vw - side, cx - (side >> 1)));
   const y0 = Math.max(0, Math.min(vh - side, cy - (side >> 1)));
   const id = ++detectSeq;
@@ -1452,7 +1506,7 @@ function kickAiDetect() {
   createImageBitmap(video, x0, y0, side, side, {
     resizeWidth: DETECT_SZ,
     resizeHeight: DETECT_SZ,
-    resizeQuality: "low",
+    resizeQuality: "pixelated",
   })
     .then((bmp) => {
       if (!slot.busy) {
@@ -1501,7 +1555,7 @@ function ensureWorker() {
   if (kind === "ai") {
     aiReady = false;
     targetStatus.textContent = "loading ai…";
-    const url = "./ai.worker.js?v=track2";
+    const url = "./ai.worker.js?v=track5";
     const modelUrl = "./models/enemy_yolo.onnx?v=ort121-webgpu";
     for (let i = 0; i < 2; i++) {
       const slot = { w: new Worker(url), busy: false, ready: false };
@@ -1540,7 +1594,7 @@ function ensureWorker() {
   }
 
   aiReady = true;
-  worker = new Worker("./color.worker.js?v=track2");
+  worker = new Worker("./color.worker.js?v=track5");
   worker.onmessage = (ev) => {
     const data = ev.data || {};
     workerBusy = false;
@@ -1604,11 +1658,12 @@ function loop() {
       ctx.stroke();
     }
     if (lastTarget) {
+      const live = liveAim(now) || lastTarget;
       ctx.strokeStyle = "#fff";
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.moveTo(vw / 2, vh / 2);
-      ctx.lineTo(lastTarget.x, lastTarget.y);
+      ctx.lineTo(live.x, live.y);
       ctx.stroke();
       ctx.lineWidth = 1;
     }

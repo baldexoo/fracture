@@ -251,16 +251,11 @@ export async function sendMove(_device, dx, dy) {
   return true;
 }
 
-/** Single tap — always release twice so LMB can't stick (spray). */
+/** Single tap via firmware 0x02 (press+short delay+release on device). */
 export async function sendClick(_device, btn = 1) {
   const b = btn & 0xff;
-  await writeFrame(new Uint8Array([0x04, b, 0x00])); // release first if stuck
-  const okPress = await writeFrame(new Uint8Array([0x03, b, 0x00]));
-  if (!okPress) return false;
-  await new Promise((r) => setTimeout(r, 10));
-  await writeFrame(new Uint8Array([0x04, b, 0x00]));
-  await writeFrame(new Uint8Array([0x04, b, 0x00]));
-  return true;
+  // one packet — avoids host setTimeout + multi-frame serial queue lag
+  return writeFrame(new Uint8Array([0x02, b, 0x00]));
 }
 
 /** One-shot test: same path as trigger. */
