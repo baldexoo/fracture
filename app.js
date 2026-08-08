@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=trig10";
+} from "./utils.js?v=trig11";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -16,10 +16,10 @@ import {
   serialConnected,
   serialSupported,
   testClick,
-} from "./hid.js?v=trig10";
-import { createOverlay } from "./overlay.js?v=trig10";
-import { createAudioRadar } from "./audio-radar.js?v=trig10";
-import { openToolWindow } from "./popout.js?v=trig10";
+} from "./hid.js?v=trig11";
+import { createOverlay } from "./overlay.js?v=trig11";
+import { createAudioRadar } from "./audio-radar.js?v=trig11";
+import { openToolWindow } from "./popout.js?v=trig11";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -1018,14 +1018,24 @@ function updateTrigStatus() {
     return;
   }
   if (cfg.triggerbot.type === "always") {
-    trigStatus.textContent = csCrosshairOnEnemy() ? "FIRE" : "always";
+    const p = triggerBestPoint();
+    const r = cfg.triggerbot.hitRadius ?? 8;
+    if (p && p.dist <= r) trigStatus.textContent = `FIRE ${p.dist | 0}px`;
+    else if (p) trigStatus.textContent = `${p.dist | 0}px`;
+    else trigStatus.textContent = "always";
     return;
   }
   if (!triggerActive()) {
     trigStatus.textContent = "wait key";
     return;
   }
-  trigStatus.textContent = csCrosshairOnEnemy() ? "FIRE" : "KEY↓";
+  {
+    const p = triggerBestPoint();
+    const r = cfg.triggerbot.hitRadius ?? 8;
+    if (p && p.dist <= r) trigStatus.textContent = `FIRE ${p.dist | 0}px`;
+    else if (p) trigStatus.textContent = `KEY↓ ${p.dist | 0}px`;
+    else trigStatus.textContent = "KEY↓";
+  }
 }
 
 function frameSize() {
@@ -1039,8 +1049,7 @@ function frameSize() {
 }
 
 /**
- * Pixel point on enemy for trigger (same bone as aim) — NOT "anywhere in the box".
- * Peek edge of bbox used to fire early; this waits until that point hits crosshair.
+ * Pixel point on enemy for trigger (same bone as aim).
  */
 function triggerAimPoint(b) {
   const bw = Math.max(1, b.x2 - b.x1);
@@ -1059,52 +1068,47 @@ function triggerAimPoint(b) {
   return { x, y };
 }
 
-/**
- * Fire only when bone point is within hitRadius of CS crosshair (frame center).
- * Extrapolated to now so peeks aren't late; no "box contains center" (that fired early).
- */
-function csCrosshairOnEnemy() {
+/** Closest bone point to CS crosshair (no velocity extrapolate — that fired early on peeks). */
+function triggerBestPoint() {
   const { w, h } = frameSize();
-  if (!w || !h) return false;
+  if (!w || !h || !hitBoxesAt) return null;
+  const ageMs = performance.now() - hitBoxesAt;
+  if (ageMs > 50) return null;
+
   const list = lastHitBoxes.length
     ? lastHitBoxes
     : lastHitBox
       ? [lastHitBox]
       : [];
-  if (!list.length || !hitBoxesAt) return false;
+  if (!list.length) return null;
 
-  const now = performance.now();
-  const ageMs = now - hitBoxesAt;
-  if (ageMs > 55) return false;
-
-  const ageSec = ageMs / 1000;
-  const ex = trackVx * ageSec;
-  const ey = trackVy * ageSec;
   const cx = w * 0.5;
   const cy = h * 0.5;
-  const r = Math.max(1, cfg.triggerbot.hitRadius ?? 8);
-
   const wantHead = (cfg.aim.bone || "head") !== "body";
-  // prefer matching bone class when both exist
-  const ordered = [...list].sort((a, b) => {
-    const ah = wantHead ? (a.head ? 0 : 1) : a.head ? 1 : 0;
-    const bh = wantHead ? (b.head ? 0 : 1) : b.head ? 1 : 0;
-    return ah - bh;
-  });
 
-  for (const raw of ordered) {
+  let best = null;
+  let bestDist = Infinity;
+  for (const raw of list) {
+    // skip wrong bone class when the other exists
+    if (wantHead && !raw.head && list.some((b) => b.head)) continue;
+    if (!wantHead && raw.head && list.some((b) => !b.head)) continue;
     const p = triggerAimPoint(raw);
-    const dx = p.x + ex - cx;
-    const dy = cfg.aim.ignoreY ? 0 : p.y + ey - cy;
+    const dx = p.x - cx;
+    const dy = cfg.aim.ignoreY ? 0 : p.y - cy;
     const dist = Math.hypot(dx, dy);
-    if (dist > r) continue;
-    if (dist > 1) {
-      const leave = (trackVx * dx + trackVy * dy) / dist;
-      if (leave > 500) continue;
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = { x: p.x, y: p.y, dist, cx, cy };
     }
-    return true;
   }
-  return false;
+  return best;
+}
+
+function csCrosshairOnEnemy() {
+  const p = triggerBestPoint();
+  if (!p) return false;
+  const r = Math.max(1, cfg.triggerbot.hitRadius ?? 8);
+  return p.dist <= r;
 }
 
 function tickTriggerbot() {
@@ -1114,7 +1118,6 @@ function tickTriggerbot() {
     return;
   }
   const now = performance.now();
-  // instant: no reaction delay — fire the frame crosshair is on enemy
   if (!csCrosshairOnEnemy()) {
     trigOnSince = 0;
     return;
@@ -1124,6 +1127,38 @@ function tickTriggerbot() {
   if (!serialConnected()) return;
   lastTriggerAt = now;
   void sendClick(hidDevice, 1);
+}
+
+/** Draw CS center + trigger bone + hit radius (debug what actually gates the shot). */
+function drawTriggerDebug(ctx, vw, vh) {
+  if (!cfg.triggerbot.enabled) return;
+  const cx = vw * 0.5;
+  const cy = vh * 0.5;
+  const r = Math.max(1, cfg.triggerbot.hitRadius ?? 8);
+  ctx.save();
+  ctx.strokeStyle = "rgba(0,255,200,0.85)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.stroke();
+  // crosshair center
+  ctx.beginPath();
+  ctx.moveTo(cx - 6, cy);
+  ctx.lineTo(cx + 6, cy);
+  ctx.moveTo(cx, cy - 6);
+  ctx.lineTo(cx, cy + 6);
+  ctx.stroke();
+  const p = triggerBestPoint();
+  if (p) {
+    ctx.fillStyle = p.dist <= r ? "#0f0" : "#f0f";
+    ctx.fillRect(p.x - 2, p.y - 2, 4, 4);
+    ctx.strokeStyle = ctx.fillStyle;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 function ensureWorker() {
@@ -1408,6 +1443,7 @@ function loop() {
       ctx.stroke();
       ctx.lineWidth = 1;
     }
+    drawTriggerDebug(ctx, vw, vh);
 
     if (
       !workerBusy &&
@@ -1469,6 +1505,7 @@ function loop() {
       ctx.lineTo(lastTarget.x, lastTarget.y);
       ctx.stroke();
     }
+    drawTriggerDebug(ctx, w, h);
     detectEvery++;
     if (!workerBusy && worker && detectionOn() && detectEvery % 2 === 0) {
       workerBusy = true;

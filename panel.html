@@ -183,9 +183,9 @@
                 </div>
               </div>
               <p style="margin:10px 0 0;color:#666;font-size:11px;text-transform:lowercase;line-height:1.35">
-                pixel: strzał tylko gdy punkt aim (head/body) jest w hit radius od środka celownika —
-                nie gdy sama krawędź boxa wejdzie na krzyżyk (to strzelało za wcześnie).
-                tap interval = odstęp pestek.
+                cyan kółko = hit radius wokół środka share (celownik).
+                różowy/zielony punkt = bone z AI (zielony = w radiusie → strzał).
+                status trig pokazuje dystans w px. bez extrapolacji (peek nie strzela wcześnie).
               </p>
             </div>
           </div>
@@ -294,6 +294,6 @@
 
     <div id="magnifier"><canvas id="magnifierCanvas" width="120" height="120"></canvas></div>
 
-    <script type="module" src="./app.js?v=trig10"></script>
+    <script type="module" src="./app.js?v=trig11"></script>
   </body>
 </html>
