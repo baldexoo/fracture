@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>fracture · panel</title>
-    <link rel="stylesheet" href="./style.css" />
+    <link rel="stylesheet" href="./style.css?v=track8" />
     <link rel="icon" href="./fracture-boot-240x135.png" />
   </head>
   <body class="panel-page">
@@ -12,7 +12,7 @@
       <video id="screenVideo" playsinline muted></video>
       <canvas id="screenCanvas"></canvas>
       <div class="stage-placeholder" id="stagePlaceholder">
-        kliknij share screen, potem wybierz okno / ekran
+        kliknij share → wybierz <b>okno CS2</b> (nie cały ekran) — mniej laga
       </div>
 
       <div class="panel-menu" id="menu">
@@ -274,6 +274,9 @@
 
         <div class="toolbar">
           <button class="btn btn-primary" id="shareBtn" type="button">share screen</button>
+          <p style="margin:8px 0 0;color:#666;font-size:11px;line-height:1.35;text-transform:lowercase">
+            mniej laga: share <b>okna gry</b>, nie „cały ekran”; capture max 1080p60.
+          </p>
         </div>
 
         <div class="panel-footer">
@@ -294,6 +297,6 @@
 
     <div id="magnifier"><canvas id="magnifierCanvas" width="120" height="120"></canvas></div>
 
-    <script type="module" src="./app.js?v=track7"></script>
+    <script type="module" src="./app.js?v=track8"></script>
   </body>
 </html>

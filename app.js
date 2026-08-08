@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=track7";
+} from "./utils.js?v=track8";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -16,10 +16,10 @@ import {
   serialConnected,
   serialSupported,
   testClick,
-} from "./hid.js?v=track7";
-import { createOverlay } from "./overlay.js?v=track7";
-import { createAudioRadar } from "./audio-radar.js?v=track7";
-import { openToolWindow } from "./popout.js?v=track7";
+} from "./hid.js?v=track8";
+import { createOverlay } from "./overlay.js?v=track8";
+import { createAudioRadar } from "./audio-radar.js?v=track8";
+import { openToolWindow } from "./popout.js?v=track8";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -718,9 +718,12 @@ async function ensureMicPermission() {
 }
 
 function displayMediaOpts(wantAudio) {
+  // Cap capture res — 1440p/4K entire-screen share is the usual stutter source in Chrome
   const opts = {
     video: {
       frameRate: { ideal: 60, max: 60 },
+      width: { ideal: 1280, max: 1920 },
+      height: { ideal: 720, max: 1080 },
     },
     selfBrowserSurface: "exclude",
     preferCurrentTab: false,
@@ -810,12 +813,23 @@ async function bindShareStream(media, meta = {}) {
     /* ignore */
   }
   try {
-    await vt.applyConstraints({ frameRate: { ideal: 60, max: 60 } });
+    // force downscale even if picker ignored constraints (common on "Entire screen")
+    await vt.applyConstraints({
+      frameRate: { ideal: 60, max: 60 },
+      width: { ideal: 1280, max: 1920 },
+      height: { ideal: 720, max: 1080 },
+    });
   } catch {
     /* ignore */
   }
 
   const vset = vt?.getSettings?.() || {};
+  console.info("[share] video settings", {
+    w: vset.width,
+    h: vset.height,
+    fps: vset.frameRate,
+    surface: vset.displaySurface,
+  });
   const surface = vset.displaySurface || "?";
   const atracks = stream.getAudioTracks();
   console.info("[share]", {
@@ -1680,16 +1694,19 @@ function loop() {
   loopPrevT = now;
 
   if (ai) {
-    // HUD canvas in video pixel space; video element is the live 60fps preview
-    if (canvas.width !== vw || canvas.height !== vh) {
-      canvas.width = vw;
-      canvas.height = vh;
+    // HUD at ≤1280 — full video-pixel canvas (1440p+) stalls main thread → stream looks lagged
+    const hudScale = Math.min(1, 1280 / Math.max(vw, vh));
+    const hw = Math.max(2, (vw * hudScale) | 0);
+    const hh = Math.max(2, (vh * hudScale) | 0);
+    if (canvas.width !== hw || canvas.height !== hh) {
+      canvas.width = hw;
+      canvas.height = hh;
     }
+    ctx.setTransform(hudScale, 0, 0, hudScale, 0, 0);
     ctx.clearRect(0, 0, vw, vh);
 
     const radius = fovRadiusPx(vw, vh);
 
-    // DO NOT coast the line between inferences
     if (workerKind === "ai" && aiPool.some((s) => s.busy)) {
       trackVx *= 0.92;
       trackVy *= 0.92;
@@ -1704,16 +1721,18 @@ function loop() {
     if (lastTarget) {
       const live = liveAim(now) || lastTarget;
       ctx.strokeStyle = "#fff";
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 1.5 / hudScale;
       ctx.beginPath();
       ctx.moveTo(vw / 2, vh / 2);
       ctx.lineTo(live.x, live.y);
       ctx.stroke();
-      ctx.lineWidth = 1;
+      ctx.lineWidth = 1 / hudScale;
     }
     drawTriggerDebug(ctx, vw, vh);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
 
-    kickAiDetect();
+    // rvfc already kicks on each capture frame — second kick here doubles bitmap work
+    if (!rvfcArmed) kickAiDetect();
   } else {
     // color path: composite video onto canvas (needs pixels for scan)
     video.classList.add("is-hidden");

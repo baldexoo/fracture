@@ -269,6 +269,9 @@ select {
   opacity: 1;
   pointer-events: none;
   background: #050505;
+  /* keep decode on compositor — less hitch when main thread is busy with AI */
+  transform: translateZ(0);
+  will-change: contents;
 }
 
 #screenVideo.is-hidden {
