@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=track17";
+} from "./utils.js?v=track18";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -16,10 +16,10 @@ import {
   serialConnected,
   serialSupported,
   testClick,
-} from "./hid.js?v=track17";
-import { createOverlay } from "./overlay.js?v=track17";
-import { createAudioRadar } from "./audio-radar.js?v=track17";
-import { openToolWindow } from "./popout.js?v=track17";
+} from "./hid.js?v=track18";
+import { createOverlay } from "./overlay.js?v=track18";
+import { createAudioRadar } from "./audio-radar.js?v=track18";
+import { openToolWindow } from "./popout.js?v=track18";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -1088,34 +1088,39 @@ function aimAssistMove(errX, errY) {
   const speed = Math.max(0, Math.min(1, (cfg.aim.speed || 0) / 100));
   const now = performance.now();
 
-  if (err < 2.5) {
+  if (err < 1.8) {
     aimPrevErr = err;
-    aimOutX *= 0.5;
-    aimOutY *= 0.5;
-    if (Math.abs(aimOutX) < 0.4) aimOutX = 0;
-    if (Math.abs(aimOutY) < 0.4) aimOutY = 0;
+    aimOutX *= 0.35;
+    aimOutY *= 0.35;
+    if (Math.abs(aimOutX) < 0.25) aimOutX = 0;
+    if (Math.abs(aimOutY) < 0.25) aimOutY = 0;
     return { dx: 0, dy: 0 };
   }
 
   const t = Math.min(1, err / fovR);
-  let gain = speed * (1 - t) * (1 - t);
-  if (err > fovR * 0.85) gain *= 0.15;
+  // floor mid-FOV so it tracks instead of hanging short; still soft at edge
+  let gain = speed * (0.28 + 0.72 * Math.pow(1 - t, 1.25));
+  if (err > fovR * 0.9) gain *= 0.12;
 
   const closing = aimPrevErr - err;
-  if (err > aimPrevErr + 4 || now < aimAwayUntil) {
-    // looking away / overshoot — don't yank back
-    if (err > aimPrevErr + 4) aimAwayUntil = now + 90;
+  if (err > aimPrevErr + 5.5 || now < aimAwayUntil) {
+    // looking away — don't yank back (short freeze; jitter shouldn't stall finish)
+    if (err > aimPrevErr + 5.5) aimAwayUntil = now + 50;
     gain = 0;
-  } else if (closing > 6) {
+  } else if (closing > 9) {
     // user already flicking toward target — only finish, don't double
-    gain *= 0.55;
+    gain *= 0.72;
+  }
+  // soft land: bleed gain when close + closing so we don't overshoot bone
+  if (err < fovR * 0.28 && closing > 1.5) {
+    gain *= 0.5 + 0.5 * (err / (fovR * 0.28));
   }
   aimPrevErr = err;
 
   let dx = errX * gain;
   let dy = errY * gain;
 
-  const maxStep = 6 + speed * 10; // ~6–16 px/tick
+  const maxStep = 9 + speed * 14; // ~9–23 px/tick
   const step = Math.hypot(dx, dy);
   if (step > maxStep) {
     const s = maxStep / step;
@@ -1123,11 +1128,12 @@ function aimAssistMove(errX, errY) {
     dy *= s;
   }
 
-  aimOutX = aimOutX * 0.65 + dx * 0.35;
-  aimOutY = aimOutY * 0.65 + dy * 0.35;
+  // snappier EMA — laggy 0.65/0.35 caused late catch-up overshoot
+  aimOutX = aimOutX * 0.4 + dx * 0.6;
+  aimOutY = aimOutY * 0.4 + dy * 0.6;
 
-  if (Math.abs(aimOutX) < 0.35) aimOutX = 0;
-  if (Math.abs(aimOutY) < 0.35) aimOutY = 0;
+  if (Math.abs(aimOutX) < 0.25) aimOutX = 0;
+  if (Math.abs(aimOutY) < 0.25) aimOutY = 0;
 
   return { dx: aimOutX, dy: aimOutY };
 }
@@ -1142,11 +1148,11 @@ function tickAimAssist() {
   const { w, h } = frameSize();
   const live = liveAim();
   const { x: cx, y: cy } = aimOrigin(w, h);
-  const ageSec = Math.min(0.04, Math.max(0, (performance.now() - detectSentAt) / 1000));
-  const ax = (live?.x ?? lastTarget.x) + trackVx * ageSec * 0.25;
+  const ageSec = Math.min(0.05, Math.max(0, (performance.now() - detectSentAt) / 1000));
+  const ax = (live?.x ?? lastTarget.x) + trackVx * ageSec * 0.55;
   const ay =
     (live?.y ?? lastTarget.y) +
-    trackVy * ageSec * 0.25 +
+    trackVy * ageSec * 0.55 +
     (cfg.aim.ignoreY ? 0 : cfg.aim.offset);
   let errX = ax - cx;
   let errY = cfg.aim.ignoreY ? 0 : ay - cy;
@@ -2067,8 +2073,8 @@ function loop() {
     aimActive() &&
     lastTarget &&
     lastDetectAt &&
-    now - lastDetectAt > 35 &&
-    now - lastDetectAt < 180
+    now - lastDetectAt > 18 &&
+    now - lastDetectAt < 220
   ) {
     tickAimAssist();
   }
