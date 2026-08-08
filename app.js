@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=track14";
+} from "./utils.js?v=track15";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -16,10 +16,10 @@ import {
   serialConnected,
   serialSupported,
   testClick,
-} from "./hid.js?v=track14";
-import { createOverlay } from "./overlay.js?v=track14";
-import { createAudioRadar } from "./audio-radar.js?v=track14";
-import { openToolWindow } from "./popout.js?v=track14";
+} from "./hid.js?v=track15";
+import { createOverlay } from "./overlay.js?v=track15";
+import { createAudioRadar } from "./audio-radar.js?v=track15";
+import { openToolWindow } from "./popout.js?v=track15";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -1233,28 +1233,21 @@ els.trigSnapBtn?.addEventListener("click", () => {
 });
 
 /**
- * Pixel point on enemy for trigger (same bone as aim).
+ * Trigger hit point from a det box — uses that box's class (head vs body),
+ * not aim.bone (aim line stays separate).
  */
 function triggerAimPoint(b) {
   const bw = Math.max(1, b.x2 - b.x1);
   const bh = Math.max(1, b.y2 - b.y1);
   const tall = bh / bw > 2.1;
-  const wantHead = (cfg.aim.bone || "head") !== "body";
+  const isHead = !!b.head && !tall;
   const x = (b.x1 + b.x2) * 0.5;
-  let y;
-  if (wantHead) {
-    y = b.head && !tall ? b.y1 + bh * 0.42 : b.y1 + bh * 0.1;
-  } else if (b.head && !tall) {
-    y = b.y1 + bh * 2.0;
-  } else {
-    y = (b.y1 + b.y2) * 0.5;
-  }
+  const y = isHead ? b.y1 + bh * 0.42 : (b.y1 + b.y2) * 0.5;
   return { x, y };
 }
 
 /**
- * Dead-reckon aim/trigger between YOLO frames (cap ~45ms) — cuts perceived lag
- * without coasting after a miss.
+ * Dead-reckon aim line between YOLO frames (cap ~45ms).
  */
 function liveAim(now = performance.now()) {
   if (!lastTarget || !lastDetectAt) return lastTarget;
@@ -1275,8 +1268,8 @@ function triggerHitRadius(h) {
 }
 
 /**
- * Trigger sample. commitDist=true only from tickTriggerbot (once/frame) —
- * status/debug used to mutate trigPrevDist 3×/frame → random leave/enter.
+ * Trigger sample. Any bone (head OR body) — independent of aim.bone.
+ * commitDist=true only from tickTriggerbot (once/frame).
  */
 function triggerBestPoint(commitDist = false) {
   const { w, h } = frameSize();
@@ -1284,31 +1277,23 @@ function triggerBestPoint(commitDist = false) {
   const now = performance.now();
   const anchor = Math.max(hitBoxesAt || 0, lastDetectAt || 0);
   const ageMs = anchor ? now - anchor : 999;
-  // gap between dual-worker hits often >70ms under load — was "nie strzela wcale"
   const maxAge = Math.max(110, Math.min(180, (lastInferMs || 40) * 3.2));
   if (ageMs > maxAge) return null;
 
   const { x: cx, y: cy } = aimOrigin(w, h);
 
+  // Prefer raw boxes: fire if ANY head/body is on crosshair (ignore aim bone filter)
+  const list = lastHitBoxes.length
+    ? lastHitBoxes
+    : lastHitBox
+      ? [lastHitBox]
+      : [];
   let x;
   let y;
-  const live = liveAim(now);
-  if (live) {
-    x = live.x;
-    y = live.y;
-  } else {
-    const list = lastHitBoxes.length
-      ? lastHitBoxes
-      : lastHitBox
-        ? [lastHitBox]
-        : [];
-    if (!list.length) return null;
-    const wantHead = (cfg.aim.bone || "head") !== "body";
+  if (list.length) {
     let best = null;
     let bestDist = Infinity;
     for (const raw of list) {
-      if (wantHead && !raw.head && list.some((b) => b.head)) continue;
-      if (!wantHead && raw.head && list.some((b) => !b.head)) continue;
       const p = triggerAimPoint(raw);
       const d = Math.hypot(p.x - cx, cfg.aim.ignoreY ? 0 : p.y - cy);
       if (d < bestDist) {
@@ -1319,6 +1304,11 @@ function triggerBestPoint(commitDist = false) {
     if (!best) return null;
     x = best.x;
     y = best.y;
+  } else {
+    const live = liveAim(now);
+    if (!live) return null;
+    x = live.x;
+    y = live.y;
   }
 
   const dx0 = x - cx;
