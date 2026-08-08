@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=track11";
+} from "./utils.js?v=track12";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -16,10 +16,10 @@ import {
   serialConnected,
   serialSupported,
   testClick,
-} from "./hid.js?v=track11";
-import { createOverlay } from "./overlay.js?v=track11";
-import { createAudioRadar } from "./audio-radar.js?v=track11";
-import { openToolWindow } from "./popout.js?v=track11";
+} from "./hid.js?v=track12";
+import { createOverlay } from "./overlay.js?v=track12";
+import { createAudioRadar } from "./audio-radar.js?v=track12";
+import { openToolWindow } from "./popout.js?v=track12";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -110,10 +110,6 @@ let trigPrevDist = Infinity;
 /** Hysteresis latch — stops 1-frame flicker from cancelling the shot. */
 let trigHystOn = false;
 let trigTickAt = 0;
-/** Locked optical center in video pixels (null = use geom until first lock). */
-let aimCx = null;
-let aimCy = null;
-let aimCenterAt = 0;
 let loopStarted = false;
 let rvfcArmed = false;
 
@@ -800,9 +796,6 @@ function stopCurrentStream() {
 async function bindShareStream(media, meta = {}) {
   stopCurrentStream();
   stream = media;
-  aimCx = null;
-  aimCy = null;
-  aimCenterAt = 0;
 
   const vtracks = stream.getVideoTracks();
   if (!vtracks.length) throw new Error("Brak ścieżki video z share.");
@@ -1111,91 +1104,11 @@ function frameSize() {
   return { w: canvas.width, h: canvas.height };
 }
 
-/**
- * Find CS crosshair / AWP reticle near frame middle (dark + lines).
- * Window-capture chrome shifts geom center — without this cyan sits up-left of real reticle.
- */
-function lockAimCenterFromVideo(vw, vh) {
-  if (!video.srcObject || video.readyState < 2) return;
-  const now = performance.now();
-  if (now - aimCenterAt < 250) return;
-  aimCenterAt = now;
-
-  const tw = Math.min(192, vw);
-  const th = Math.min(192, vh);
-  const x0 = Math.max(0, ((vw - tw) / 2) | 0);
-  const y0 = Math.max(0, ((vh - th) / 2) | 0);
-  if (detectCanvas.width !== tw || detectCanvas.height !== th) {
-    detectCanvas.width = tw;
-    detectCanvas.height = th;
-  }
-  try {
-    detectCtx.drawImage(video, x0, y0, tw, th, 0, 0, tw, th);
-  } catch {
-    return;
-  }
-  const { data } = detectCtx.getImageData(0, 0, tw, th);
-  const col = new Float64Array(tw);
-  const row = new Float64Array(th);
-  for (let y = 0; y < th; y++) {
-    let rs = 0;
-    for (let x = 0; x < tw; x++) {
-      const i = (y * tw + x) * 4;
-      const lum = data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114;
-      col[x] += lum;
-      rs += lum;
-    }
-    row[y] = rs / tw;
-  }
-  for (let x = 0; x < tw; x++) col[x] /= th;
-
-  const meanC = col.reduce((a, b) => a + b, 0) / tw;
-  const meanR = row.reduce((a, b) => a + b, 0) / th;
-  let bestX = (tw / 2) | 0;
-  let bestY = (th / 2) | 0;
-  let minC = Infinity;
-  let minR = Infinity;
-  // prefer strong dark lines near middle (ignore edges of patch)
-  const m = 16;
-  for (let x = m; x < tw - m; x++) {
-    if (col[x] < minC) {
-      minC = col[x];
-      bestX = x;
-    }
-  }
-  for (let y = m; y < th - m; y++) {
-    if (row[y] < minR) {
-      minR = row[y];
-      bestY = y;
-    }
-  }
-  // need real contrast — flat wall without reticle → keep previous/geom
-  if (meanC - minC < 12 || meanR - minR < 12) return;
-
-  const gx = x0 + bestX + 0.5;
-  const gy = y0 + bestY + 0.5;
-  // reject wild jumps (noise)
-  const geomX = vw * 0.5;
-  const geomY = vh * 0.5;
-  if (Math.hypot(gx - geomX, gy - geomY) > Math.min(vw, vh) * 0.08) return;
-
-  if (aimCx == null) {
-    aimCx = gx;
-    aimCy = gy;
-  } else {
-    aimCx = aimCx * 0.75 + gx * 0.25;
-    aimCy = aimCy * 0.75 + gy * 0.25;
-  }
-}
-
-/** Optical aim/trigger origin in video pixels. */
+/** Frame center (+ optional manual offset). No reticle hunting. */
 function aimOrigin(w, h) {
   const ox = Number(cfg.triggerbot.centerOffsetX) || 0;
   const oy = Number(cfg.triggerbot.centerOffsetY) || 0;
-  return {
-    x: (aimCx != null ? aimCx : w * 0.5) + ox,
-    y: (aimCy != null ? aimCy : h * 0.5) + oy,
-  };
+  return { x: w * 0.5 + ox, y: h * 0.5 + oy };
 }
 
 /**
@@ -1703,7 +1616,7 @@ function ensureWorker() {
   if (kind === "ai") {
     aiReady = false;
     targetStatus.textContent = "loading ai…";
-    const url = "./ai.worker.js?v=track11";
+    const url = "./ai.worker.js?v=track12";
     const modelUrl = "./models/enemy_yolo.onnx?v=ort121-webgpu";
     for (let i = 0; i < 2; i++) {
       const slot = { w: new Worker(url), busy: false, ready: false };
@@ -1798,7 +1711,6 @@ function loop() {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, vw, vh);
 
-    lockAimCenterFromVideo(vw, vh);
     const origin = aimOrigin(vw, vh);
     const radius = fovRadiusPx(vw, vh);
 
