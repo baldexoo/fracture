@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=track9";
+} from "./utils.js?v=track10";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -16,10 +16,10 @@ import {
   serialConnected,
   serialSupported,
   testClick,
-} from "./hid.js?v=track9";
-import { createOverlay } from "./overlay.js?v=track9";
-import { createAudioRadar } from "./audio-radar.js?v=track9";
-import { openToolWindow } from "./popout.js?v=track9";
+} from "./hid.js?v=track10";
+import { createOverlay } from "./overlay.js?v=track10";
+import { createAudioRadar } from "./audio-radar.js?v=track10";
+import { openToolWindow } from "./popout.js?v=track10";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -718,12 +718,11 @@ async function ensureMicPermission() {
 }
 
 function displayMediaOpts(wantAudio) {
-  // Cap capture res — 1440p/4K entire-screen share is the usual stutter source in Chrome
+  // Do NOT constrain width/height — Chrome often crops instead of uniform scale,
+  // which shifts geometric center left of the real CS crosshair.
   const opts = {
     video: {
       frameRate: { ideal: 60, max: 60 },
-      width: { ideal: 1280, max: 1920 },
-      height: { ideal: 720, max: 1080 },
     },
     selfBrowserSurface: "exclude",
     preferCurrentTab: false,
@@ -813,12 +812,7 @@ async function bindShareStream(media, meta = {}) {
     /* ignore */
   }
   try {
-    // force downscale even if picker ignored constraints (common on "Entire screen")
-    await vt.applyConstraints({
-      frameRate: { ideal: 60, max: 60 },
-      width: { ideal: 1280, max: 1920 },
-      height: { ideal: 720, max: 1080 },
-    });
+    await vt.applyConstraints({ frameRate: { ideal: 60, max: 60 } });
   } catch {
     /* ignore */
   }
@@ -1673,35 +1667,6 @@ function syncPreviewMode() {
   video.classList.toggle("is-hidden", !ai);
 }
 
-/**
- * Pin HUD canvas to the same letterboxed rect as <video object-fit:contain>.
- * Without this, canvas fill ≠ video content → cyan crosshair drifts off CS center.
- */
-function syncHudToVideo(vw, vh) {
-  const rw = video.clientWidth || 0;
-  const rh = video.clientHeight || 0;
-  if (!rw || !rh || !vw || !vh) return 1;
-  const fit = Math.min(rw / vw, rh / vh);
-  const dispW = vw * fit;
-  const dispH = vh * fit;
-  const left = (rw - dispW) * 0.5;
-  const top = (rh - dispH) * 0.5;
-  canvas.style.left = `${left}px`;
-  canvas.style.top = `${top}px`;
-  canvas.style.width = `${dispW}px`;
-  canvas.style.height = `${dispH}px`;
-
-  const hudScale = Math.min(1, 1280 / Math.max(vw, vh));
-  const hw = Math.max(2, (vw * hudScale) | 0);
-  const hh = Math.max(2, (vh * hudScale) | 0);
-  if (canvas.width !== hw || canvas.height !== hh) {
-    canvas.width = hw;
-    canvas.height = hh;
-  }
-  ctx.setTransform(hudScale, 0, 0, hudScale, 0, 0);
-  return hudScale;
-}
-
 function loop() {
   if (!video.srcObject) {
     requestAnimationFrame(loop);
@@ -1723,7 +1688,21 @@ function loop() {
   loopPrevT = now;
 
   if (ai) {
-    const hudScale = syncHudToVideo(vw, vh);
+    // clear track9 inline box (stuck in long-lived tab)
+    if (canvas.style.left || canvas.style.top || canvas.style.width || canvas.style.height) {
+      canvas.style.left = "";
+      canvas.style.top = "";
+      canvas.style.width = "";
+      canvas.style.height = "";
+    }
+    // Same intrinsic size as <video> + same object-fit:contain → centers must match.
+    // (Never constrain capture W/H — Chrome crops and shifts CS crosshair right of frame center.)
+    if (canvas.width !== vw || canvas.height !== vh) {
+      canvas.width = vw;
+      canvas.height = vh;
+    }
+    // reset any leftover transform from older builds
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, vw, vh);
 
     const radius = fovRadiusPx(vw, vh);
@@ -1742,15 +1721,14 @@ function loop() {
     if (lastTarget) {
       const live = liveAim(now) || lastTarget;
       ctx.strokeStyle = "#fff";
-      ctx.lineWidth = 1.5 / hudScale;
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.moveTo(vw / 2, vh / 2);
       ctx.lineTo(live.x, live.y);
       ctx.stroke();
-      ctx.lineWidth = 1 / hudScale;
+      ctx.lineWidth = 1;
     }
     drawTriggerDebug(ctx, vw, vh);
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
 
     if (!rvfcArmed) kickAiDetect();
   } else {

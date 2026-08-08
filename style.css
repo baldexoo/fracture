@@ -269,9 +269,6 @@ select {
   opacity: 1;
   pointer-events: none;
   background: #050505;
-  /* keep decode on compositor — less hitch when main thread is busy with AI */
-  transform: translateZ(0);
-  will-change: contents;
 }
 
 #screenVideo.is-hidden {
@@ -280,11 +277,10 @@ select {
 
 #screenCanvas {
   position: absolute;
-  left: 0;
-  top: 0;
-  /* size/position set in JS to match video object-fit:contain content box */
+  inset: 0;
   width: 100%;
   height: 100%;
+  object-fit: contain;
   background: transparent;
   pointer-events: none;
 }
