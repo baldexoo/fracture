@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=trig9";
+} from "./utils.js?v=trig10";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -16,10 +16,10 @@ import {
   serialConnected,
   serialSupported,
   testClick,
-} from "./hid.js?v=trig9";
-import { createOverlay } from "./overlay.js?v=trig9";
-import { createAudioRadar } from "./audio-radar.js?v=trig9";
-import { openToolWindow } from "./popout.js?v=trig9";
+} from "./hid.js?v=trig10";
+import { createOverlay } from "./overlay.js?v=trig10";
+import { createAudioRadar } from "./audio-radar.js?v=trig10";
+import { openToolWindow } from "./popout.js?v=trig10";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -1038,25 +1038,30 @@ function frameSize() {
   return { w: canvas.width, h: canvas.height };
 }
 
-/** Mild torso pad for head boxes — big expand caused late strafe shots. */
-function triggerVolume(b) {
+/**
+ * Pixel point on enemy for trigger (same bone as aim) — NOT "anywhere in the box".
+ * Peek edge of bbox used to fire early; this waits until that point hits crosshair.
+ */
+function triggerAimPoint(b) {
   const bw = Math.max(1, b.x2 - b.x1);
   const bh = Math.max(1, b.y2 - b.y1);
   const tall = bh / bw > 2.1;
-  if (b.head && !tall) {
-    return {
-      x1: b.x1 - bw * 0.08,
-      x2: b.x2 + bw * 0.08,
-      y1: b.y1,
-      y2: b.y1 + bh * 1.85,
-    };
+  const wantHead = (cfg.aim.bone || "head") !== "body";
+  const x = (b.x1 + b.x2) * 0.5;
+  let y;
+  if (wantHead) {
+    y = b.head && !tall ? b.y1 + bh * 0.42 : b.y1 + bh * 0.1;
+  } else if (b.head && !tall) {
+    y = b.y1 + bh * 2.0;
+  } else {
+    y = (b.y1 + b.y2) * 0.5;
   }
-  return b;
+  return { x, y };
 }
 
 /**
- * CS crosshair = frame center, vs boxes extrapolated to NOW (kills late strafe fire).
- * Stale dets / led aim-line tip are ignored.
+ * Fire only when bone point is within hitRadius of CS crosshair (frame center).
+ * Extrapolated to now so peeks aren't late; no "box contains center" (that fired early).
  */
 function csCrosshairOnEnemy() {
   const { w, h } = frameSize();
@@ -1069,36 +1074,33 @@ function csCrosshairOnEnemy() {
   if (!list.length || !hitBoxesAt) return false;
 
   const now = performance.now();
-  // capture→infer lag already in detectSentAt; boxes timestamped on result
   const ageMs = now - hitBoxesAt;
-  // allow slightly fresher window — peek shots need the latest det, not waiting
   if (ageMs > 55) return false;
 
   const ageSec = ageMs / 1000;
   const ex = trackVx * ageSec;
   const ey = trackVy * ageSec;
-
   const cx = w * 0.5;
   const cy = h * 0.5;
-  const pad = cfg.triggerbot.hitRadius ?? 8;
+  const r = Math.max(1, cfg.triggerbot.hitRadius ?? 8);
 
-  for (const raw of list) {
-    const box = triggerVolume(raw);
-    const x1 = box.x1 + ex - pad;
-    const x2 = box.x2 + ex + pad;
-    const y1 = cfg.aim.ignoreY ? -1e9 : box.y1 + ey - pad;
-    const y2 = cfg.aim.ignoreY ? 1e9 : box.y2 + ey + pad;
-    if (cx < x1 || cx > x2 || cy < y1 || cy > y2) continue;
+  const wantHead = (cfg.aim.bone || "head") !== "body";
+  // prefer matching bone class when both exist
+  const ordered = [...list].sort((a, b) => {
+    const ah = wantHead ? (a.head ? 0 : 1) : a.head ? 1 : 0;
+    const bh = wantHead ? (b.head ? 0 : 1) : b.head ? 1 : 0;
+    return ah - bh;
+  });
 
-    // leaving gate: box center fleeing crosshair → don't shoot
-    const bx = (box.x1 + box.x2) * 0.5 + ex;
-    const by = (box.y1 + box.y2) * 0.5 + ey;
-    const toBx = bx - cx;
-    const toBy = cfg.aim.ignoreY ? 0 : by - cy;
-    const dist = Math.hypot(toBx, toBy);
-    if (dist > 2) {
-      const leave = (trackVx * toBx + trackVy * toBy) / dist; // px/s away from center
-      if (leave > 450) continue; // already strafing off hard
+  for (const raw of ordered) {
+    const p = triggerAimPoint(raw);
+    const dx = p.x + ex - cx;
+    const dy = cfg.aim.ignoreY ? 0 : p.y + ey - cy;
+    const dist = Math.hypot(dx, dy);
+    if (dist > r) continue;
+    if (dist > 1) {
+      const leave = (trackVx * dx + trackVy * dy) / dist;
+      if (leave > 500) continue;
     }
     return true;
   }

@@ -183,8 +183,9 @@
                 </div>
               </div>
               <p style="margin:10px 0 0;color:#666;font-size:11px;text-transform:lowercase;line-height:1.35">
-                instant: jak celownik na wrogu → od razu jeden LMB (bez delay).
-                tap interval = tylko odstęp między pestkami, nie reakcja.
+                pixel: strzał tylko gdy punkt aim (head/body) jest w hit radius od środka celownika —
+                nie gdy sama krawędź boxa wejdzie na krzyżyk (to strzelało za wcześnie).
+                tap interval = odstęp pestek.
               </p>
             </div>
           </div>
@@ -293,6 +294,6 @@
 
     <div id="magnifier"><canvas id="magnifierCanvas" width="120" height="120"></canvas></div>
 
-    <script type="module" src="./app.js?v=trig9"></script>
+    <script type="module" src="./app.js?v=trig10"></script>
   </body>
 </html>
