@@ -183,8 +183,9 @@
                 </div>
               </div>
               <p style="margin:10px 0 0;color:#666;font-size:11px;text-transform:lowercase;line-height:1.35">
-                strzał przy WEJŚCIU na celownik; przy ucieczce predict +50ms (hid/gra) → blokada late.
-                status leave = nie strzela bo już schodzi. tap interval = kolejne pestki tylko gdy nadal on.
+                hit radius &lt;6 i tak floor (share+AI lag) — na klipie „2” = spóźniony strzał.
+                enter-ahead: strzał gdy cel dopiero wlatuje; leave = blokada late.
+                tap interval = kolejne pestki tylko gdy nadal on.
               </p>
             </div>
           </div>
@@ -293,6 +294,6 @@
 
     <div id="magnifier"><canvas id="magnifierCanvas" width="120" height="120"></canvas></div>
 
-    <script type="module" src="./app.js?v=track5"></script>
+    <script type="module" src="./app.js?v=track6"></script>
   </body>
 </html>

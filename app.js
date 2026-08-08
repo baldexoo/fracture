@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=track5";
+} from "./utils.js?v=track6";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -16,10 +16,10 @@ import {
   serialConnected,
   serialSupported,
   testClick,
-} from "./hid.js?v=track5";
-import { createOverlay } from "./overlay.js?v=track5";
-import { createAudioRadar } from "./audio-radar.js?v=track5";
-import { openToolWindow } from "./popout.js?v=track5";
+} from "./hid.js?v=track6";
+import { createOverlay } from "./overlay.js?v=track6";
+import { createAudioRadar } from "./audio-radar.js?v=track6";
+import { openToolWindow } from "./popout.js?v=track6";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -1060,9 +1060,10 @@ function updateTrigStatus() {
     trigStatus.textContent = "no serial";
     return;
   }
+  const { h } = frameSize();
+  const r = triggerHitRadius(h);
   if (cfg.triggerbot.type === "always") {
     const p = triggerBestPoint();
-    const r = cfg.triggerbot.hitRadius ?? 8;
     if (p?.veto) trigStatus.textContent = "leave";
     else if (p && p.dist <= r) trigStatus.textContent = `FIRE ${p.dist | 0}px`;
     else if (p) trigStatus.textContent = `${p.dist | 0}px`;
@@ -1075,7 +1076,6 @@ function updateTrigStatus() {
   }
   {
     const p = triggerBestPoint();
-    const r = cfg.triggerbot.hitRadius ?? 8;
     if (p?.veto) trigStatus.textContent = "leave";
     else if (p && p.dist <= r) trigStatus.textContent = `FIRE ${p.dist | 0}px`;
     else if (p) trigStatus.textContent = `KEY↓ ${p.dist | 0}px`;
@@ -1127,17 +1127,25 @@ function liveAim(now = performance.now()) {
   };
 }
 
+/** Effective hit radius — tiny slider values are unusable with share+AI lag. */
+function triggerHitRadius(h) {
+  const cfgR = Math.max(1, cfg.triggerbot.hitRadius ?? 8);
+  // ponytail: floor ~0.45% of frame H (≈6–10px @1080–1440); radius 2 = late forever. Raise via smaller model / native.
+  const floor = Math.max(6, ((h || 1080) * 0.0045) | 0);
+  return Math.max(cfgR, floor);
+}
+
 /**
- * Trigger = tracking line point. On leave: predict to click-arrival time
- * (det age + ~35ms HID/game) so we don't fire after they're off. Peek: raw only.
- * Rising-edge: prefer shot on ENTER, not while exiting.
+ * Trigger = tracking line point.
+ * Enter-ahead: fire when closing into radius (share/AI lag).
+ * Leave-ahead: veto when exiting so we don't fire late.
  */
 function triggerBestPoint() {
   const { w, h } = frameSize();
   if (!w || !h) return null;
   const now = performance.now();
   const ageMs = hitBoxesAt ? now - hitBoxesAt : 999;
-  if (ageMs > 55) return null;
+  if (ageMs > 70) return null;
 
   const cx = w * 0.5;
   const cy = h * 0.5;
@@ -1182,13 +1190,17 @@ function triggerBestPoint() {
     leave = (trackVx * dx0 + trackVy * dy0) / dist0;
   }
   const distGrowing = dist0 > trigPrevDist + 1.2;
+  const distClosing = dist0 < trigPrevDist - 0.8;
   trigPrevDist = dist0;
 
-  const CLICK_AHEAD_MS = 35;
+  const CLICK_AHEAD_MS = 40;
+  const approaching = leave < -35 || distClosing;
+  const exiting = leave > 40 || distGrowing;
+
   let px = x;
   let py = y;
-  if (leave > 40 || distGrowing) {
-    const predSec = (ageMs + CLICK_AHEAD_MS) / 1000;
+  if (approaching || exiting) {
+    const predSec = (ageMs * 0.35 + CLICK_AHEAD_MS) / 1000;
     px = x + trackVx * predSec;
     py = y + trackVy * predSec;
   }
@@ -1196,9 +1208,10 @@ function triggerBestPoint() {
   const dx = px - cx;
   const dy = cfg.aim.ignoreY ? 0 : py - cy;
   const dist = Math.hypot(dx, dy);
-  const r = Math.max(1, cfg.triggerbot.hitRadius ?? 8);
+  const r = triggerHitRadius(h);
 
-  if ((leave > 450 || distGrowing) && dist > r * 0.5) {
+  // already leaving and still outside half-radius after predict → veto
+  if (exiting && !approaching && dist > r * 0.55) {
     return { x: px, y: py, dist, cx, cy, leave, veto: true };
   }
 
@@ -1208,7 +1221,9 @@ function triggerBestPoint() {
 function csCrosshairOnEnemy() {
   const p = triggerBestPoint();
   if (!p || p.veto) return false;
-  const r = Math.max(1, cfg.triggerbot.hitRadius ?? 8);
+  const { h } = frameSize();
+  const r = triggerHitRadius(h);
+  // enter-ahead: predicted point already in radius counts as on
   return p.dist <= r;
 }
 
@@ -1251,7 +1266,7 @@ function drawTriggerDebug(ctx, vw, vh) {
   if (!cfg.triggerbot.enabled) return;
   const cx = vw * 0.5;
   const cy = vh * 0.5;
-  const r = Math.max(1, cfg.triggerbot.hitRadius ?? 8);
+  const r = triggerHitRadius(vh);
   ctx.save();
   ctx.strokeStyle = "rgba(0,255,200,0.85)";
   ctx.lineWidth = 1;
