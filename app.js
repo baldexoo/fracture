@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=trig7";
+} from "./utils.js?v=trig8";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -16,10 +16,10 @@ import {
   serialConnected,
   serialSupported,
   testClick,
-} from "./hid.js?v=trig7";
-import { createOverlay } from "./overlay.js?v=trig7";
-import { createAudioRadar } from "./audio-radar.js?v=trig7";
-import { openToolWindow } from "./popout.js?v=trig7";
+} from "./hid.js?v=trig8";
+import { createOverlay } from "./overlay.js?v=trig8";
+import { createAudioRadar } from "./audio-radar.js?v=trig8";
+import { openToolWindow } from "./popout.js?v=trig8";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -177,8 +177,10 @@ const els = {
   trigKey: document.getElementById("trigKey"),
   trigDelay: document.getElementById("trigDelay"),
   trigHit: document.getElementById("trigHit"),
+  trigTap: document.getElementById("trigTap"),
   trigDelayLabel: document.getElementById("trigDelayLabel"),
   trigHitLabel: document.getElementById("trigHitLabel"),
+  trigTapLabel: document.getElementById("trigTapLabel"),
   visOverlay: document.getElementById("visOverlay"),
   visRadar: document.getElementById("visRadar"),
   radarDistance: document.getElementById("radarDistance"),
@@ -210,10 +212,12 @@ function writeCfgToUi() {
   if (!els.trigKey.querySelector(`option[value="${els.trigKey.value}"]`)) {
     els.trigKey.value = "KeyX";
   }
-  els.trigDelay.value = cfg.triggerbot.delay ?? 40;
-  els.trigHit.value = cfg.triggerbot.hitRadius ?? 14;
+  els.trigDelay.value = cfg.triggerbot.delay ?? 10;
+  els.trigHit.value = cfg.triggerbot.hitRadius ?? 10;
+  if (els.trigTap) els.trigTap.value = cfg.triggerbot.tapInterval ?? 280;
   if (els.trigDelayLabel) els.trigDelayLabel.textContent = String(els.trigDelay.value);
   if (els.trigHitLabel) els.trigHitLabel.textContent = String(els.trigHit.value);
+  if (els.trigTapLabel) els.trigTapLabel.textContent = String(els.trigTap?.value ?? 280);
   els.visOverlay.checked = cfg.visuals.detectionOverlay;
   els.visRadar.checked = cfg.visuals.audioRadar.enabled;
   els.radarDistance.value = cfg.visuals.audioRadar.distance;
@@ -246,8 +250,10 @@ function readUiToCfg() {
   cfg.triggerbot.key = els.trigKey.value;
   cfg.triggerbot.delay = Number(els.trigDelay.value);
   cfg.triggerbot.hitRadius = Number(els.trigHit.value);
+  cfg.triggerbot.tapInterval = Number(els.trigTap?.value ?? 280);
   if (els.trigDelayLabel) els.trigDelayLabel.textContent = String(cfg.triggerbot.delay);
   if (els.trigHitLabel) els.trigHitLabel.textContent = String(cfg.triggerbot.hitRadius);
+  if (els.trigTapLabel) els.trigTapLabel.textContent = String(cfg.triggerbot.tapInterval);
   cfg.visuals.detectionOverlay = els.visOverlay.checked;
   cfg.visuals.audioRadar.enabled = els.visRadar.checked;
   cfg.visuals.audioRadar.distance = Number(els.radarDistance.value);
@@ -1123,7 +1129,8 @@ function tickTriggerbot() {
     trigOnSince = 0;
     return;
   }
-  if (now - lastTriggerAt < 90) return;
+  const tap = Math.max(120, cfg.triggerbot.tapInterval ?? 280);
+  if (now - lastTriggerAt < tap) return;
   if (!serialConnected()) return;
   lastTriggerAt = now;
   void sendClick(hidDevice, 1);

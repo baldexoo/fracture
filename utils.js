@@ -22,6 +22,7 @@ export const DEFAULTS = {
     key: "KeyX",
     delay: 10,
     hitRadius: 10,
+    tapInterval: 280, // ms between single taps (pestka, not spray)
     prediction: 0, // legacy
   },
   canvasScale: 0.5,

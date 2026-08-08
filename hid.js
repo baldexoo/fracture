@@ -251,13 +251,12 @@ export async function sendMove(_device, dx, dy) {
   return true;
 }
 
-/** Left/right click via RP2040 Serial → press/release (firmware also handles 0x02). */
+/** Left/right single tap via RP2040 Serial (short press — pestka, not hold-spray). */
 export async function sendClick(_device, btn = 1) {
   const b = btn & 0xff;
-  // prefer explicit press/release — works even if firmware maps 0x02 oddly
   const okPress = await writeFrame(new Uint8Array([0x03, b, 0x00]));
   if (!okPress) return false;
-  await new Promise((r) => setTimeout(r, 30));
+  await new Promise((r) => setTimeout(r, 12));
   return writeFrame(new Uint8Array([0x04, b, 0x00]));
 }
 

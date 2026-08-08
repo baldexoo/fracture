@@ -174,18 +174,28 @@
               <div class="stack">
                 <div class="label-row">
                   <span>hit radius</span>
-                  <span id="trigHitLabel">14</span>
+                  <span id="trigHitLabel">10</span>
                 </div>
                 <div class="slider-wrap" data-slider="trigHit">
                   <div class="slider-fill"></div>
-                  <div class="slider-value">14</div>
-                  <input type="range" id="trigHit" min="4" max="40" value="14" />
+                  <div class="slider-value">10</div>
+                  <input type="range" id="trigHit" min="4" max="40" value="10" />
+                </div>
+              </div>
+              <div class="stack">
+                <div class="label-row">
+                  <span>tap interval (ms)</span>
+                  <span id="trigTapLabel">280</span>
+                </div>
+                <div class="slider-wrap" data-slider="trigTap">
+                  <div class="slider-fill"></div>
+                  <div class="slider-value">280</div>
+                  <input type="range" id="trigTap" min="120" max="500" value="280" />
                 </div>
               </div>
               <p style="margin:10px 0 0;color:#666;font-size:11px;text-transform:lowercase;line-height:1.35">
-                strzela tylko gdy celownik CS jest na boxie TERAZ (extrapolacja + max 70ms świeżość).
-                duży delay / hit radius = późne strzały przy strafe — trzymaj nisko (0–20).
-                type always albo key; panel z fokusem.
+                pestka: pojedyncze LMB z odstępem (tap interval), nie spray.
+                delay = reakcja przed pierwszym strzałem. hit radius nisko przy strafe.
               </p>
             </div>
           </div>
@@ -294,6 +304,6 @@
 
     <div id="magnifier"><canvas id="magnifierCanvas" width="120" height="120"></canvas></div>
 
-    <script type="module" src="./app.js?v=trig7"></script>
+    <script type="module" src="./app.js?v=trig8"></script>
   </body>
 </html>
