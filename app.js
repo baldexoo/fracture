@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=track1";
+} from "./utils.js?v=track2";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -16,10 +16,10 @@ import {
   serialConnected,
   serialSupported,
   testClick,
-} from "./hid.js?v=track1";
-import { createOverlay } from "./overlay.js?v=track1";
-import { createAudioRadar } from "./audio-radar.js?v=track1";
-import { openToolWindow } from "./popout.js?v=track1";
+} from "./hid.js?v=track2";
+import { createOverlay } from "./overlay.js?v=track2";
+import { createAudioRadar } from "./audio-radar.js?v=track2";
+import { openToolWindow } from "./popout.js?v=track2";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -75,6 +75,11 @@ let stream = null;
 let worker = null;
 let workerKind = null; // "color" | "ai"
 let workerBusy = false;
+/** @type {{w: Worker, busy: boolean, ready: boolean}[]} */
+let aiPool = [];
+let aiReadyCount = 0;
+let detectSeq = 0;
+let appliedSeq = 0;
 let aiReady = false;
 let lastTarget = null;
 let smoothTarget = null;
@@ -298,7 +303,11 @@ els.aimBone.addEventListener("change", () => {
   trackVx = trackVy = 0;
   rawPrev = null;
   tracking = false;
-  if (worker && workerKind === "ai") worker.postMessage({ type: "reset" });
+  if (workerKind === "ai") {
+    for (const s of aiPool) s.w.postMessage({ type: "reset" });
+  } else if (worker && workerKind === "ai") {
+    worker.postMessage({ type: "reset" });
+  }
 });
 
 els.visOverlay.addEventListener("change", () => {
@@ -1161,218 +1170,321 @@ function drawTriggerDebug(ctx, vw, vh) {
   ctx.restore();
 }
 
-function ensureWorker() {
-  const kind = cfg.detection.method === "ai" ? "ai" : "color";
-  if (worker && workerKind === kind) return;
-
+function killWorkers() {
   if (worker) {
-    worker.terminate();
+    try {
+      worker.terminate();
+    } catch {
+      /* ignore */
+    }
     worker = null;
-    workerBusy = false;
   }
-  workerKind = kind;
-  aiReady = kind !== "ai";
-  worker = new Worker(kind === "ai" ? "./ai.worker.js?v=track1" : "./color.worker.js?v=trig11");
-  worker.onmessage = (ev) => {
-    const data = ev.data || {};
-    if (data.type === "ready") {
-      aiReady = true;
-      const bits = [data.ep || "wasm"];
-      if (data.threads) bits.push(`${data.threads}t`);
-      if (data.gpu === false) bits.push("no-gpu");
-      targetStatus.textContent = `ai ready · ${bits.join(" · ")}`;
-      return;
+  for (const s of aiPool) {
+    try {
+      s.w.terminate();
+    } catch {
+      /* ignore */
     }
-    if (data.type === "error") {
-      aiReady = false;
-      targetStatus.textContent = data.error || "ai-error";
-      workerBusy = false;
-      return;
+  }
+  aiPool = [];
+  aiReadyCount = 0;
+  workerBusy = false;
+  aiReady = false;
+  detectSeq = 0;
+  appliedSeq = 0;
+}
+
+function applyDetectResult(data) {
+  const { target, matchCount, mode, warn, ms, ep, boxes } = data;
+  lastDebugPts = null;
+
+  if (mode === "bad-color" || mode === "ai-error") {
+    tracking = false;
+    lastTarget = null;
+    smoothTarget = null;
+    lastHitBox = null;
+    lastHitBoxes = [];
+    targetStatus.textContent = warn || mode;
+    return;
+  }
+  if (mode === "ai-loading") {
+    targetStatus.textContent = warn || mode;
+    return;
+  }
+
+  if (Array.isArray(boxes) && boxes.length) {
+    lastHitBoxes = boxes;
+    lastHitBox = boxes[0];
+    hitBoxesAt = performance.now();
+  } else if (!target) {
+    lastHitBoxes = [];
+    lastHitBox = null;
+    hitBoxesAt = 0;
+  }
+
+  if (target) {
+    missFrames = 0;
+    tracking = true;
+    lastInferMs = ms != null ? ms : lastInferMs;
+    const now = performance.now();
+
+    if (!lastHitBoxes.length) {
+      if (
+        target.x1 != null &&
+        target.y1 != null &&
+        target.x2 != null &&
+        target.y2 != null
+      ) {
+        lastHitBox = { x1: target.x1, y1: target.y1, x2: target.x2, y2: target.y2 };
+        lastHitBoxes = [lastHitBox];
+        hitBoxesAt = now;
+      } else {
+        const r = 8;
+        lastHitBox = {
+          x1: target.x - r,
+          y1: target.y - r,
+          x2: target.x + r,
+          y2: target.y + r,
+        };
+        lastHitBoxes = [lastHitBox];
+        hitBoxesAt = now;
+      }
     }
 
-    workerBusy = false;
-    const { target, matchCount, mode, warn, ms, ep, boxes } = data;
-    lastDebugPts = null;
+    let tx = target.x;
+    let ty = target.y;
 
-    if (mode === "bad-color" || mode === "ai-error") {
+    if (workerKind === "ai") {
+      if (rawPrev && now - rawPrev.t > 8 && now - rawPrev.t < 350) {
+        const jump = Math.hypot(target.x - rawPrev.x, target.y - rawPrev.y);
+        if (jump > 140) {
+          trackVx = 0;
+          trackVy = 0;
+        } else {
+          const dt = (now - rawPrev.t) / 1000;
+          const vx = (target.x - rawPrev.x) / dt;
+          const vy = (target.y - rawPrev.y) / dt;
+          const reverse = trackVx * vx + trackVy * vy < 0;
+          if (reverse || jump > 28) {
+            trackVx = vx;
+            trackVy = vy;
+          } else {
+            trackVx = trackVx * 0.2 + vx * 0.8;
+            trackVy = trackVy * 0.2 + vy * 0.8;
+          }
+          const sp = Math.hypot(trackVx, trackVy);
+          if (sp > 2200) {
+            trackVx = (trackVx / sp) * 2200;
+            trackVy = (trackVy / sp) * 2200;
+          }
+        }
+      }
+      rawPrev = { x: target.x, y: target.y, t: now };
+      smoothTarget = { x: target.x, y: target.y };
+      velX = trackVx / 60;
+      velY = trackVy / 60;
+    } else if (!smoothTarget) {
+      smoothTarget = { x: tx, y: ty };
+      velX = 0;
+      velY = 0;
+    } else {
+      const dx = tx - smoothTarget.x;
+      const dy = ty - smoothTarget.y;
+      const dist = Math.hypot(dx, dy);
+      const maxStep = 85;
+      let sx = tx;
+      let sy = ty;
+      if (dist > maxStep) {
+        const s = maxStep / dist;
+        sx = smoothTarget.x + dx * s;
+        sy = smoothTarget.y + dy * s;
+      }
+      const a = mode === "track" ? (dist < 6 ? 0.14 : 0.28) : 0.42;
+      const nx = smoothTarget.x * (1 - a) + sx * a;
+      const ny = smoothTarget.y * (1 - a) + sy * a;
+      velX = nx - smoothTarget.x;
+      velY = ny - smoothTarget.y;
+      smoothTarget = { x: nx, y: ny };
+    }
+    lastTarget = smoothTarget;
+    lastDetectAt = now;
+    if (now - lastStatusAt > 60) {
+      lastStatusAt = now;
+      const extra =
+        mode === "ai" && target.conf != null
+          ? ` · ${NAMES_SHORT[target.cls] || target.cls} ${(target.conf * 100) | 0}%`
+          : "";
+      const timing = ms != null ? ` ${ms}ms` : "";
+      const backend = ep ? ` · ${ep}` : "";
+      const pool = workerKind === "ai" ? ` · ${aiPool.filter((s) => s.busy).length}/${aiPool.length}w` : "";
+      targetStatus.textContent = `${mode} · ${lastTarget.x | 0},${lastTarget.y | 0} (${matchCount})${extra}${timing}${backend}${pool}`;
+    }
+  } else {
+    missFrames++;
+    const missLimit = workerKind === "ai" ? 0 : 12;
+    const dropAt = workerKind === "ai" ? 1 : 18;
+    if (missFrames <= missLimit && smoothTarget) {
+      lastTarget = smoothTarget;
+      trackVx *= 0.5;
+      trackVy *= 0.5;
+    } else if (missFrames > dropAt) {
       tracking = false;
       lastTarget = null;
       smoothTarget = null;
       lastHitBox = null;
       lastHitBoxes = [];
-      targetStatus.textContent = warn || mode;
-      return;
-    }
-    if (mode === "ai-loading") {
-      targetStatus.textContent = warn || mode;
-      return;
-    }
-
-    if (Array.isArray(boxes) && boxes.length) {
-      lastHitBoxes = boxes;
-      lastHitBox = boxes[0];
-      hitBoxesAt = performance.now();
-    } else if (!target) {
-      // no dets this frame — drop trigger boxes immediately (don't coast into strafe)
-      lastHitBoxes = [];
-      lastHitBox = null;
       hitBoxesAt = 0;
+      velX = velY = 0;
+      trackVx = trackVy = 0;
+      rawPrev = null;
+      targetStatus.textContent = warn || (matchCount ? `seek (${matchCount})` : "—");
+    } else if (workerKind === "ai") {
+      lastTarget = null;
+      smoothTarget = null;
+      targetStatus.textContent = matchCount ? `seek (${matchCount})` : "—";
     }
+  }
 
-    if (target) {
-      missFrames = 0;
-      tracking = true;
-      lastInferMs = ms != null ? ms : lastInferMs;
-      const now = performance.now();
+  if (aimActive() && lastTarget && detectionOn() && serialConnected()) {
+    const { w, h } = frameSize();
+    const ageSec = Math.min(0.04, Math.max(0, (performance.now() - detectSentAt) / 1000));
+    let ax = lastTarget.x + trackVx * ageSec * 0.35;
+    let ay = lastTarget.y + trackVy * ageSec * 0.35;
+    let mx = ax - w / 2;
+    let my = cfg.aim.ignoreY ? 0 : ay - h / 2;
+    if (Math.abs(mx) < 2) mx = 0;
+    if (Math.abs(my) < 2) my = 0;
+    const speed = cfg.aim.speed / 100;
+    void sendMove(hidDevice, mx * speed, my * speed + (cfg.aim.ignoreY ? 0 : cfg.aim.offset));
+  }
 
-      if (!lastHitBoxes.length) {
-        if (
-          target.x1 != null &&
-          target.y1 != null &&
-          target.x2 != null &&
-          target.y2 != null
-        ) {
-          lastHitBox = { x1: target.x1, y1: target.y1, x2: target.x2, y2: target.y2 };
-          lastHitBoxes = [lastHitBox];
-          hitBoxesAt = now;
-        } else {
-          const r = 8;
-          lastHitBox = {
-            x1: target.x - r,
-            y1: target.y - r,
-            x2: target.x + r,
-            y2: target.y + r,
-          };
-          lastHitBoxes = [lastHitBox];
-          hitBoxesAt = now;
-        }
-      }
+  tickTriggerbot();
+}
 
-      let tx = target.x;
-      let ty = target.y;
+/** Fire next AI frame on any free worker (2-wide pool ≈ 2× update rate). */
+function kickAiDetect() {
+  if (workerKind !== "ai" || !aiReady || !detectionOn()) return;
+  if (!video.srcObject || video.readyState < 2) return;
+  const slot = aiPool.find((s) => s.ready && !s.busy);
+  if (!slot) return;
 
-      if (workerKind === "ai") {
-        // velocity from RAW dets — snap on reverse so line/aim don't keep old strafe
-        if (rawPrev && now - rawPrev.t > 8 && now - rawPrev.t < 350) {
-          const jump = Math.hypot(target.x - rawPrev.x, target.y - rawPrev.y);
-          if (jump > 140) {
-            trackVx = 0;
-            trackVy = 0;
-          } else {
-            const dt = (now - rawPrev.t) / 1000;
-            const vx = (target.x - rawPrev.x) / dt;
-            const vy = (target.y - rawPrev.y) / dt;
-            const reverse = trackVx * vx + trackVy * vy < 0;
-            if (reverse || jump > 28) {
-              // direction change / flick — instant retarget, no blend lag
-              trackVx = vx;
-              trackVy = vy;
-            } else {
-              trackVx = trackVx * 0.2 + vx * 0.8;
-              trackVy = trackVy * 0.2 + vy * 0.8;
-            }
-            const sp = Math.hypot(trackVx, trackVy);
-            if (sp > 2200) {
-              trackVx = (trackVx / sp) * 2200;
-              trackVy = (trackVy / sp) * 2200;
-            }
-          }
-        }
-        rawPrev = { x: target.x, y: target.y, t: now };
+  const vw = video.videoWidth | 0;
+  const vh = video.videoHeight | 0;
+  if (!vw || !vh) return;
 
-        // Line = RAW bone NOW (no lead). Lead only for mouse move below.
-        // Lead on the drawn line caused "thinking" lag on strafe reverse.
-        smoothTarget = { x: target.x, y: target.y };
-        velX = trackVx / 60;
-        velY = trackVy / 60;
-      } else if (!smoothTarget) {
-        smoothTarget = { x: tx, y: ty };
-        velX = 0;
-        velY = 0;
-      } else {
-        const dx = tx - smoothTarget.x;
-        const dy = ty - smoothTarget.y;
-        const dist = Math.hypot(dx, dy);
-        const maxStep = 85;
-        let sx = tx;
-        let sy = ty;
-        if (dist > maxStep) {
-          const s = maxStep / dist;
-          sx = smoothTarget.x + dx * s;
-          sy = smoothTarget.y + dy * s;
-        }
-        const a =
-          mode === "track"
-            ? dist < 6
-              ? 0.14
-              : 0.28
-            : 0.42;
-        const nx = smoothTarget.x * (1 - a) + sx * a;
-        const ny = smoothTarget.y * (1 - a) + sy * a;
-        velX = nx - smoothTarget.x;
-        velY = ny - smoothTarget.y;
-        smoothTarget = { x: nx, y: ny };
-      }
-      lastTarget = smoothTarget;
-      lastDetectAt = now;
-      if (now - lastStatusAt > 80) {
-        lastStatusAt = now;
-        const extra =
-          mode === "ai" && target.conf != null
-            ? ` · ${NAMES_SHORT[target.cls] || target.cls} ${(target.conf * 100) | 0}%`
-            : "";
-        const timing = ms != null ? ` ${ms}ms` : "";
-        const backend = ep ? ` · ${ep}` : "";
-        targetStatus.textContent = `${mode} · ${lastTarget.x | 0},${lastTarget.y | 0} (${matchCount})${extra}${timing}${backend}`;
-      }
-    } else {
-      missFrames++;
-      // AI: drop line immediately on miss — don't hold stale point through reverse
-      const missLimit = workerKind === "ai" ? 0 : 12;
-      const dropAt = workerKind === "ai" ? 1 : 18;
-      if (missFrames <= missLimit && smoothTarget) {
-        lastTarget = smoothTarget;
-        trackVx *= 0.5;
-        trackVy *= 0.5;
-      } else if (missFrames > dropAt) {
-        tracking = false;
-        lastTarget = null;
-        smoothTarget = null;
-        lastHitBox = null;
-        lastHitBoxes = [];
-        hitBoxesAt = 0;
-        velX = velY = 0;
-        trackVx = trackVy = 0;
-        rawPrev = null;
-        targetStatus.textContent = warn || (matchCount ? `seek (${matchCount})` : "—");
-      } else if (workerKind === "ai") {
-        lastTarget = null;
-        smoothTarget = null;
-        targetStatus.textContent = matchCount ? `seek (${matchCount})` : "—";
-      }
-    }
+  const radius = fovRadiusPx(vw, vh);
+  const cx = vw >> 1;
+  const cy = vh >> 1;
+  const side = Math.max(96, Math.min(vw, vh, radius * 2));
+  const x0 = Math.max(0, Math.min(vw - side, cx - (side >> 1)));
+  const y0 = Math.max(0, Math.min(vh - side, cy - (side >> 1)));
+  const id = ++detectSeq;
+  slot.busy = true;
+  detectSentAt = performance.now();
 
-    if (aimActive() && lastTarget && detectionOn() && serialConnected()) {
-      const { w, h } = frameSize();
-      // small lead only for HID move (line stays raw)
-      const ageSec = Math.min(0.04, Math.max(0, (performance.now() - detectSentAt) / 1000));
-      let ax = lastTarget.x + trackVx * ageSec * 0.35;
-      let ay = lastTarget.y + trackVy * ageSec * 0.35;
-      let mx = ax - w / 2;
-      let my = cfg.aim.ignoreY ? 0 : ay - h / 2;
-      if (Math.abs(mx) < 2) mx = 0;
-      if (Math.abs(my) < 2) my = 0;
-      const speed = cfg.aim.speed / 100;
-      void sendMove(hidDevice, mx * speed, my * speed + (cfg.aim.ignoreY ? 0 : cfg.aim.offset));
-    }
-
-    tickTriggerbot();
+  const cfgMsg = {
+    tolerance: cfg.detection.tolerance,
+    bone: cfg.aim.bone || "head",
   };
 
+  // resize in createImageBitmap — avoids main-thread getImageData stall
+  createImageBitmap(video, x0, y0, side, side, {
+    resizeWidth: DETECT_SZ,
+    resizeHeight: DETECT_SZ,
+    resizeQuality: "low",
+  })
+    .then((bmp) => {
+      if (!slot.busy) {
+        bmp.close();
+        return;
+      }
+      try {
+        slot.w.postMessage(
+          {
+            id,
+            bitmap: bmp,
+            width: DETECT_SZ,
+            height: DETECT_SZ,
+            ox: x0,
+            oy: y0,
+            fullW: vw,
+            fullH: vh,
+            mapScale: side / DETECT_SZ,
+            cropIsFov: true,
+            cfg: cfgMsg,
+          },
+          [bmp]
+        );
+      } catch (e) {
+        try {
+          bmp.close();
+        } catch {
+          /* ignore */
+        }
+        slot.busy = false;
+      }
+    })
+    .catch(() => {
+      slot.busy = false;
+    });
+}
+
+function ensureWorker() {
+  const kind = cfg.detection.method === "ai" ? "ai" : "color";
+  if (kind === "ai" && workerKind === "ai" && aiPool.length === 2) return;
+  if (kind === "color" && worker && workerKind === "color") return;
+
+  killWorkers();
+  workerKind = kind;
+
   if (kind === "ai") {
+    aiReady = false;
     targetStatus.textContent = "loading ai…";
-    worker.postMessage({ type: "init", modelUrl: "./models/enemy_yolo.onnx?v=ort121-webgpu" });
+    const url = "./ai.worker.js?v=track2";
+    const modelUrl = "./models/enemy_yolo.onnx?v=ort121-webgpu";
+    for (let i = 0; i < 2; i++) {
+      const slot = { w: new Worker(url), busy: false, ready: false };
+      slot.w.onmessage = (ev) => {
+        const data = ev.data || {};
+        if (data.type === "ready") {
+          slot.ready = true;
+          aiReadyCount++;
+          if (aiReadyCount >= aiPool.length) {
+            aiReady = true;
+            const bits = [data.ep || "wasm", `${aiPool.length}w`];
+            if (data.threads) bits.push(`${data.threads}t`);
+            targetStatus.textContent = `ai ready · ${bits.join(" · ")}`;
+            kickAiDetect();
+            kickAiDetect(); // fill both slots
+          }
+          return;
+        }
+        if (data.type === "error") {
+          targetStatus.textContent = data.error || "ai-error";
+          slot.busy = false;
+          return;
+        }
+        slot.busy = false;
+        const id = data.id || 0;
+        // immediately pipeline next frame on this free slot
+        queueMicrotask(() => kickAiDetect());
+        if (id && id < appliedSeq) return; // stale (older than applied)
+        if (id) appliedSeq = id;
+        applyDetectResult(data);
+      };
+      aiPool.push(slot);
+      slot.w.postMessage({ type: "init", modelUrl });
+    }
+    return;
   }
+
+  aiReady = true;
+  worker = new Worker("./color.worker.js?v=track2");
+  worker.onmessage = (ev) => {
+    const data = ev.data || {};
+    workerBusy = false;
+    applyDetectResult(data);
+  };
 }
 
 const NAMES_SHORT = ["ct", "cth", "t", "th"];
@@ -1418,9 +1530,8 @@ function loop() {
 
     const radius = fovRadiusPx(vw, vh);
 
-    // DO NOT coast the line between inferences — old velocity keeps going after
-    // strafe reverse and looks like "thinking". Line jumps on each fresh det only.
-    if (workerBusy) {
+    // DO NOT coast the line between inferences
+    if (workerKind === "ai" && aiPool.some((s) => s.busy)) {
       trackVx *= 0.92;
       trackVy *= 0.92;
     }
@@ -1442,41 +1553,7 @@ function loop() {
     }
     drawTriggerDebug(ctx, vw, vh);
 
-    if (
-      !workerBusy &&
-      worker &&
-      detectionOn() &&
-      aiReady
-    ) {
-      workerBusy = true;
-      detectSentAt = performance.now();
-      const cx = vw >> 1;
-      const cy = vh >> 1;
-      const side = Math.max(96, Math.min(vw, vh, radius * 2));
-      const x0 = Math.max(0, Math.min(vw - side, cx - (side >> 1)));
-      const y0 = Math.max(0, Math.min(vh - side, cy - (side >> 1)));
-      detectCtx.drawImage(video, x0, y0, side, side, 0, 0, DETECT_SZ, DETECT_SZ);
-      const imageData = detectCtx.getImageData(0, 0, DETECT_SZ, DETECT_SZ);
-      worker.postMessage(
-        {
-          id: frames,
-          imageData: imageData.data,
-          width: DETECT_SZ,
-          height: DETECT_SZ,
-          ox: x0,
-          oy: y0,
-          fullW: vw,
-          fullH: vh,
-          mapScale: side / DETECT_SZ,
-          cropIsFov: true,
-          cfg: {
-            tolerance: cfg.detection.tolerance,
-            bone: cfg.aim.bone || "head",
-          },
-        },
-        [imageData.data.buffer]
-      );
-    }
+    kickAiDetect();
   } else {
     // color path: composite video onto canvas (needs pixels for scan)
     video.classList.add("is-hidden");

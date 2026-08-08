@@ -24,6 +24,10 @@ let loadError = null;
 let tensorBuf = null;
 let activeEp = "wasm";
 let lock = null;
+/** @type {OffscreenCanvas | null} */
+let offscreen = null;
+/** @type {OffscreenCanvasRenderingContext2D | null} */
+let offctx = null;
 
 async function createSession(modelUrl, eps) {
   return ort.InferenceSession.create(modelUrl, {
@@ -294,14 +298,37 @@ self.onmessage = async (ev) => {
   }
 
   const t0 = performance.now();
+  const msgId = msg.id || 0;
   try {
-    const { imageData, width, height, ox, oy, fullW, fullH, cfg, mapScale } = msg;
+    let rgba = msg.imageData;
+    let width = msg.width;
+    let height = msg.height;
+    const { ox, oy, fullW, fullH, cfg, mapScale } = msg;
+
+    // Main thread sends cropped+resized ImageBitmap — fresher, less main-thread getImageData
+    if (msg.bitmap) {
+      if (!offscreen) {
+        offscreen = new OffscreenCanvas(IMGSZ, IMGSZ);
+        offctx = offscreen.getContext("2d", { willReadFrequently: true });
+      }
+      offctx.drawImage(msg.bitmap, 0, 0, IMGSZ, IMGSZ);
+      try {
+        msg.bitmap.close();
+      } catch {
+        /* ignore */
+      }
+      const idata = offctx.getImageData(0, 0, IMGSZ, IMGSZ);
+      rgba = idata.data;
+      width = IMGSZ;
+      height = IMGSZ;
+    }
+
     const tol = cfg?.tolerance ?? 10;
     const locked = !!lock;
     const confTh = locked
       ? Math.max(CONF_LOCK, 0.38 - tol * 0.003)
       : Math.max(CONF_MIN, Math.min(0.6, 0.48 - tol * 0.003));
-    const { tensor, scale, padX, padY } = letterbox(imageData, width, height);
+    const { tensor, scale, padX, padY } = letterbox(rgba, width, height);
     const input = new ort.Tensor("float32", tensor, [1, 3, IMGSZ, IMGSZ]);
     const results = await session.run({ [session.inputNames[0]]: input });
     const out = results[session.outputNames[0]];
@@ -328,8 +355,8 @@ self.onmessage = async (ev) => {
     const target = pickTarget(boxes, fovCx, fovCy, cfg?.bone || "head");
     const ms = (performance.now() - t0) | 0;
     self.postMessage({
+      id: msgId,
       target,
-      // all dets — trigger checks CS crosshair vs ANY box (not only aim-bone tip)
       boxes: boxes.map((b) => ({
         x1: b.x1,
         y1: b.y1,
@@ -345,6 +372,7 @@ self.onmessage = async (ev) => {
     });
   } catch (e) {
     self.postMessage({
+      id: msgId,
       target: null,
       matchCount: 0,
       mode: "ai-error",

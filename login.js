@@ -17,7 +17,7 @@ btn.addEventListener("click", async () => {
       throw new Error("WebHID niedostępne w tej przeglądarce.");
     }
     await loginWithHid({ softAccept: false });
-    location.href = "./panel.html?v=track1";
+    location.href = "./panel.html?v=track2";
   } catch (e) {
     err.textContent = e?.message || String(e);
   } finally {
