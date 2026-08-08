@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=track13";
+} from "./utils.js?v=track14";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -16,10 +16,10 @@ import {
   serialConnected,
   serialSupported,
   testClick,
-} from "./hid.js?v=track13";
-import { createOverlay } from "./overlay.js?v=track13";
-import { createAudioRadar } from "./audio-radar.js?v=track13";
-import { openToolWindow } from "./popout.js?v=track13";
+} from "./hid.js?v=track14";
+import { createOverlay } from "./overlay.js?v=track14";
+import { createAudioRadar } from "./audio-radar.js?v=track14";
+import { openToolWindow } from "./popout.js?v=track14";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -205,6 +205,11 @@ const els = {
   trigTap: document.getElementById("trigTap"),
   trigHitLabel: document.getElementById("trigHitLabel"),
   trigTapLabel: document.getElementById("trigTapLabel"),
+  trigOffX: document.getElementById("trigOffX"),
+  trigOffY: document.getElementById("trigOffY"),
+  trigOffXLabel: document.getElementById("trigOffXLabel"),
+  trigOffYLabel: document.getElementById("trigOffYLabel"),
+  trigSnapBtn: document.getElementById("trigSnapBtn"),
   visOverlay: document.getElementById("visOverlay"),
   visRadar: document.getElementById("visRadar"),
   radarDistance: document.getElementById("radarDistance"),
@@ -240,6 +245,10 @@ function writeCfgToUi() {
   if (els.trigTap) els.trigTap.value = cfg.triggerbot.tapInterval ?? 280;
   if (els.trigHitLabel) els.trigHitLabel.textContent = String(els.trigHit.value);
   if (els.trigTapLabel) els.trigTapLabel.textContent = String(els.trigTap?.value ?? 280);
+  if (els.trigOffX) els.trigOffX.value = cfg.triggerbot.centerOffsetX ?? 0;
+  if (els.trigOffY) els.trigOffY.value = cfg.triggerbot.centerOffsetY ?? 0;
+  if (els.trigOffXLabel) els.trigOffXLabel.textContent = String(els.trigOffX?.value ?? 0);
+  if (els.trigOffYLabel) els.trigOffYLabel.textContent = String(els.trigOffY?.value ?? 0);
   els.visOverlay.checked = cfg.visuals.detectionOverlay;
   els.visRadar.checked = cfg.visuals.audioRadar.enabled;
   els.radarDistance.value = cfg.visuals.audioRadar.distance;
@@ -275,6 +284,14 @@ function readUiToCfg() {
   cfg.triggerbot.tapInterval = Number(els.trigTap?.value ?? 280);
   if (els.trigHitLabel) els.trigHitLabel.textContent = String(cfg.triggerbot.hitRadius);
   if (els.trigTapLabel) els.trigTapLabel.textContent = String(cfg.triggerbot.tapInterval);
+  if (els.trigOffX) {
+    cfg.triggerbot.centerOffsetX = Number(els.trigOffX.value) || 0;
+    if (els.trigOffXLabel) els.trigOffXLabel.textContent = String(cfg.triggerbot.centerOffsetX);
+  }
+  if (els.trigOffY) {
+    cfg.triggerbot.centerOffsetY = Number(els.trigOffY.value) || 0;
+    if (els.trigOffYLabel) els.trigOffYLabel.textContent = String(cfg.triggerbot.centerOffsetY);
+  }
   cfg.visuals.detectionOverlay = els.visOverlay.checked;
   cfg.visuals.audioRadar.enabled = els.visRadar.checked;
   cfg.visuals.audioRadar.distance = Number(els.radarDistance.value);
@@ -1104,12 +1121,116 @@ function frameSize() {
   return { w: canvas.width, h: canvas.height };
 }
 
-/** Frame center (+ optional manual offset). No reticle hunting. */
+/** Frame center (+ optional manual offset). No continuous reticle hunting. */
 function aimOrigin(w, h) {
   const ox = Number(cfg.triggerbot.centerOffsetX) || 0;
   const oy = Number(cfg.triggerbot.centerOffsetY) || 0;
   return { x: w * 0.5 + ox, y: h * 0.5 + oy };
 }
+
+/**
+ * One-shot: find YOUR crosshair near frame middle, bake offset into cfg, stop.
+ * (Share often includes window chrome → geom center ≠ CS crosshair.)
+ */
+function snapCenterToCrosshair() {
+  const vw = video.videoWidth | 0;
+  const vh = video.videoHeight | 0;
+  if (!vw || !vh || video.readyState < 2) {
+    alert("Najpierw share screen.");
+    return false;
+  }
+  const tw = Math.min(240, vw);
+  const th = Math.min(240, vh);
+  const x0 = Math.max(0, ((vw - tw) / 2) | 0);
+  const y0 = Math.max(0, ((vh - th) / 2) | 0);
+  if (detectCanvas.width !== tw || detectCanvas.height !== th) {
+    detectCanvas.width = tw;
+    detectCanvas.height = th;
+  }
+  detectCtx.drawImage(video, x0, y0, tw, th, 0, 0, tw, th);
+  const { data } = detectCtx.getImageData(0, 0, tw, th);
+
+  // 1) custom green/cyan CS crosshair (bright, not our HUD — HUD is composited later)
+  let gSumX = 0;
+  let gSumY = 0;
+  let gN = 0;
+  for (let i = 0, p = 0; i < tw * th; i++, p += 4) {
+    const r = data[p];
+    const g = data[p + 1];
+    const b = data[p + 2];
+    if (g > 160 && g > r + 50 && g > b + 40 && r < 120) {
+      gSumX += i % tw;
+      gSumY += (i / tw) | 0;
+      gN++;
+    }
+  }
+  let fx;
+  let fy;
+  if (gN >= 4) {
+    fx = x0 + gSumX / gN;
+    fy = y0 + gSumY / gN;
+  } else {
+    // 2) dark AWP reticle lines
+    const col = new Float64Array(tw);
+    const row = new Float64Array(th);
+    for (let y = 0; y < th; y++) {
+      let rs = 0;
+      for (let x = 0; x < tw; x++) {
+        const p = (y * tw + x) * 4;
+        const lum = data[p] * 0.299 + data[p + 1] * 0.587 + data[p + 2] * 0.114;
+        col[x] += lum;
+        rs += lum;
+      }
+      row[y] = rs / tw;
+    }
+    for (let x = 0; x < tw; x++) col[x] /= th;
+    let bestX = (tw / 2) | 0;
+    let bestY = (th / 2) | 0;
+    let minC = Infinity;
+    let minR = Infinity;
+    for (let x = 20; x < tw - 20; x++) {
+      if (col[x] < minC) {
+        minC = col[x];
+        bestX = x;
+      }
+    }
+    for (let y = 20; y < th - 20; y++) {
+      if (row[y] < minR) {
+        minR = row[y];
+        bestY = y;
+      }
+    }
+    const meanC = col.reduce((a, b) => a + b, 0) / tw;
+    const meanR = row.reduce((a, b) => a + b, 0) / th;
+    if (meanC - minC < 10 || meanR - minR < 10) {
+      alert("Nie widzę celownika — wyceluj w ścianę i spróbuj jeszcze raz.");
+      return false;
+    }
+    fx = x0 + bestX + 0.5;
+    fy = y0 + bestY + 0.5;
+  }
+
+  const ox = Math.round(fx - vw * 0.5);
+  const oy = Math.round(fy - vh * 0.5);
+  if (Math.hypot(ox, oy) > Math.min(vw, vh) * 0.12) {
+    alert("Snap za daleko od środka — spróbuj jeszcze raz na ścianie.");
+    return false;
+  }
+  cfg.triggerbot.centerOffsetX = Math.max(-40, Math.min(40, ox));
+  cfg.triggerbot.centerOffsetY = Math.max(-40, Math.min(40, oy));
+  if (els.trigOffX) els.trigOffX.value = String(cfg.triggerbot.centerOffsetX);
+  if (els.trigOffY) els.trigOffY.value = String(cfg.triggerbot.centerOffsetY);
+  writeCfgToUi();
+  saveConfig(cfg);
+  if (trigStatus) {
+    trigStatus.textContent = `snap ${cfg.triggerbot.centerOffsetX},${cfg.triggerbot.centerOffsetY}`;
+  }
+  return true;
+}
+
+els.trigSnapBtn?.addEventListener("click", () => {
+  snapCenterToCrosshair();
+});
 
 /**
  * Pixel point on enemy for trigger (same bone as aim).

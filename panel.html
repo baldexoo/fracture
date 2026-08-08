@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>fracture · panel</title>
-    <link rel="stylesheet" href="./style.css?v=track13" />
+    <link rel="stylesheet" href="./style.css?v=track14" />
     <link rel="icon" href="./fracture-boot-240x135.png" />
   </head>
   <body class="panel-page">
@@ -182,10 +182,34 @@
                   <input type="range" id="trigTap" min="120" max="500" value="280" />
                 </div>
               </div>
+              <div class="stack">
+                <div class="label-row">
+                  <span>center offset x</span>
+                  <span id="trigOffXLabel">0</span>
+                </div>
+                <div class="slider-wrap" data-slider="trigOffX">
+                  <div class="slider-fill"></div>
+                  <div class="slider-value">0</div>
+                  <input type="range" id="trigOffX" min="-40" max="40" value="0" />
+                </div>
+              </div>
+              <div class="stack">
+                <div class="label-row">
+                  <span>center offset y</span>
+                  <span id="trigOffYLabel">0</span>
+                </div>
+                <div class="slider-wrap" data-slider="trigOffY">
+                  <div class="slider-fill"></div>
+                  <div class="slider-value">0</div>
+                  <input type="range" id="trigOffY" min="-40" max="40" value="0" />
+                </div>
+              </div>
+              <div class="row" style="margin-top:8px">
+                <button class="btn" id="trigSnapBtn" type="button">dopasuj do celownika</button>
+              </div>
               <p style="margin:10px 0 0;color:#666;font-size:11px;text-transform:lowercase;line-height:1.35">
-                hit radius &lt;6 i tak floor (share+AI lag) — na klipie „2” = spóźniony strzał.
-                enter-ahead: strzał gdy cel dopiero wlatuje; leave = blokada late.
-                tap interval = kolejne pestki tylko gdy nadal on.
+                cyan musi być na <b>Twoim</b> celowniku. share bierze ramkę okna → środek bitmapy ≠ celownik.
+                kliknij <b>dopasuj</b> raz (celownik na środku ekranu / ściana) albo suwaki offset.
               </p>
             </div>
           </div>
@@ -297,6 +321,6 @@
 
     <div id="magnifier"><canvas id="magnifierCanvas" width="120" height="120"></canvas></div>
 
-    <script type="module" src="./app.js?v=track13"></script>
+    <script type="module" src="./app.js?v=track14"></script>
   </body>
 </html>
