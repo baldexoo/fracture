@@ -24,6 +24,9 @@ export const DEFAULTS = {
     hitRadius: 8,
     tapInterval: 280,
     prediction: 0, // legacy
+    /** Extra px after auto crosshair lock (rare DPI/chrome leftovers). */
+    centerOffsetX: 0,
+    centerOffsetY: 0,
   },
   canvasScale: 0.5,
   scanStride: 2,

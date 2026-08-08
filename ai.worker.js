@@ -333,8 +333,8 @@ self.onmessage = async (ev) => {
     const results = await session.run({ [session.inputNames[0]]: input });
     const out = results[session.outputNames[0]];
 
-    const fovCx = fullW * 0.5;
-    const fovCy = fullH * 0.5;
+    const fovCx = msg.aimCx != null ? msg.aimCx : fullW * 0.5;
+    const fovCy = msg.aimCy != null ? msg.aimCy : fullH * 0.5;
     // crop already is FOV square → don't shrink again
     const fovR2 = msg.cropIsFov
       ? Infinity
