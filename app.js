@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=track15";
+} from "./utils.js?v=track16";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -16,10 +16,10 @@ import {
   serialConnected,
   serialSupported,
   testClick,
-} from "./hid.js?v=track15";
-import { createOverlay } from "./overlay.js?v=track15";
-import { createAudioRadar } from "./audio-radar.js?v=track15";
-import { openToolWindow } from "./popout.js?v=track15";
+} from "./hid.js?v=track16";
+import { createOverlay } from "./overlay.js?v=track16";
+import { createAudioRadar } from "./audio-radar.js?v=track16";
+import { openToolWindow } from "./popout.js?v=track16";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -1233,8 +1233,7 @@ els.trigSnapBtn?.addEventListener("click", () => {
 });
 
 /**
- * Trigger hit point from a det box — uses that box's class (head vs body),
- * not aim.bone (aim line stays separate).
+ * Trigger hit point from a det box — head tip for heads; unused for body (box test).
  */
 function triggerAimPoint(b) {
   const bw = Math.max(1, b.x2 - b.x1);
@@ -1242,8 +1241,28 @@ function triggerAimPoint(b) {
   const tall = bh / bw > 2.1;
   const isHead = !!b.head && !tall;
   const x = (b.x1 + b.x2) * 0.5;
-  const y = isHead ? b.y1 + bh * 0.42 : (b.y1 + b.y2) * 0.5;
-  return { x, y };
+  const y = isHead ? b.y1 + bh * 0.42 : b.y1 + bh * 0.35; // chest, not hip
+  return { x, y, isHead };
+}
+
+/** Dist from crosshair to enemy for trigger. Body = whole torso band; head = point. */
+function triggerDistToBox(cx, cy, b) {
+  const bw = Math.max(1, b.x2 - b.x1);
+  const bh = Math.max(1, b.y2 - b.y1);
+  const tall = bh / bw > 2.1;
+  const isHead = !!b.head && !tall;
+  if (isHead) {
+    const p = triggerAimPoint(b);
+    return Math.hypot(p.x - cx, cfg.aim.ignoreY ? 0 : p.y - cy);
+  }
+  // torso only — drop lower ~22% (legs); inside band ⇒ 0
+  const x1 = b.x1;
+  const x2 = b.x2;
+  const y1 = b.y1;
+  const y2 = b.y1 + bh * 0.78;
+  const dx = cx < x1 ? x1 - cx : cx > x2 ? cx - x2 : 0;
+  const dy = cfg.aim.ignoreY ? 0 : cy < y1 ? y1 - cy : cy > y2 ? cy - y2 : 0;
+  return Math.hypot(dx, dy);
 }
 
 /**
@@ -1290,20 +1309,21 @@ function triggerBestPoint(commitDist = false) {
       : [];
   let x;
   let y;
+  let boxDist = null;
   if (list.length) {
     let best = null;
     let bestDist = Infinity;
     for (const raw of list) {
-      const p = triggerAimPoint(raw);
-      const d = Math.hypot(p.x - cx, cfg.aim.ignoreY ? 0 : p.y - cy);
+      const d = triggerDistToBox(cx, cy, raw);
       if (d < bestDist) {
         bestDist = d;
-        best = p;
+        best = triggerAimPoint(raw);
       }
     }
     if (!best) return null;
     x = best.x;
     y = best.y;
+    boxDist = bestDist;
   } else {
     const live = liveAim(now);
     if (!live) return null;
@@ -1313,11 +1333,11 @@ function triggerBestPoint(commitDist = false) {
 
   const dx0 = x - cx;
   const dy0 = cfg.aim.ignoreY ? 0 : y - cy;
-  const dist0 = Math.hypot(dx0, dy0);
+  const dist0 = boxDist != null ? boxDist : Math.hypot(dx0, dy0);
 
   let leave = 0;
-  if (dist0 > 1) {
-    leave = (trackVx * dx0 + trackVy * dy0) / dist0;
+  if (dist0 > 1 && (dx0 || dy0)) {
+    leave = (trackVx * dx0 + trackVy * dy0) / Math.hypot(dx0, dy0);
   }
   const prev = trigPrevDist;
   const distGrowing = Number.isFinite(prev) && dist0 > prev + 1.5;
@@ -1330,18 +1350,21 @@ function triggerBestPoint(commitDist = false) {
 
   let px = x;
   let py = y;
+  let dist = dist0;
   if (approaching || (leave > 40 && distGrowing)) {
     const predSec = (Math.min(ageMs, 50) * 0.4 + CLICK_AHEAD_MS) / 1000;
     px = x + trackVx * predSec;
     py = y + trackVy * predSec;
+    // keep solid torso hits (boxDist=0) — don't lose them to point-predict
+    if (boxDist == null || boxDist > triggerHitRadius(h)) {
+      const dx = px - cx;
+      const dy = cfg.aim.ignoreY ? 0 : py - cy;
+      dist = Math.hypot(dx, dy);
+    }
   }
 
-  const dx = px - cx;
-  const dy = cfg.aim.ignoreY ? 0 : py - cy;
-  const dist = Math.hypot(dx, dy);
   const r = triggerHitRadius(h);
 
-  // only hard-veto clear exits — old r*0.55 veto blocked good peeks
   if (exiting && dist > r) {
     return { x: px, y: py, dist, cx, cy, leave, veto: true };
   }
