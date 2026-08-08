@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=track18";
+} from "./utils.js?v=track19";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -16,10 +16,10 @@ import {
   serialConnected,
   serialSupported,
   testClick,
-} from "./hid.js?v=track18";
-import { createOverlay } from "./overlay.js?v=track18";
-import { createAudioRadar } from "./audio-radar.js?v=track18";
-import { openToolWindow } from "./popout.js?v=track18";
+} from "./hid.js?v=track19";
+import { createOverlay } from "./overlay.js?v=track19";
+import { createAudioRadar } from "./audio-radar.js?v=track19";
+import { openToolWindow } from "./popout.js?v=track19";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -114,7 +114,10 @@ let trigTickAt = 0;
 let aimPrevErr = 0;
 let aimOutX = 0;
 let aimOutY = 0;
-let aimAwayUntil = 0;
+/** HID px already sent toward current detect error (open-loop until next YOLO). */
+let aimAppliedX = 0;
+let aimAppliedY = 0;
+let aimLastTickAt = 0;
 let loopStarted = false;
 let rvfcArmed = false;
 
@@ -1077,50 +1080,57 @@ function aimActive() {
 }
 
 /**
- * Human-like assist: weak on wide flicks, stronger near bone, EMA + step cap.
- * Infers user flick from error delta (no raw mouse in CS focus).
+ * Human-like assist: weak on wide flicks, stronger near bone.
+ * Residual = detect error − already-sent HID (stops rAF from re-applying same err → wobble).
  * Trigger path untouched.
  */
-function aimAssistMove(errX, errY) {
-  const { w, h } = frameSize();
-  const fovR = Math.max(28, fovRadiusPx(w, h));
-  const err = Math.hypot(errX, errY);
-  const speed = Math.max(0, Math.min(1, (cfg.aim.speed || 0) / 100));
-  const now = performance.now();
-
-  if (err < 1.8) {
-    aimPrevErr = err;
+function resetAimAssist(soft = false) {
+  aimAppliedX = 0;
+  aimAppliedY = 0;
+  if (!soft) {
+    aimOutX = 0;
+    aimOutY = 0;
+    aimPrevErr = 0;
+  } else {
     aimOutX *= 0.35;
     aimOutY *= 0.35;
-    if (Math.abs(aimOutX) < 0.25) aimOutX = 0;
-    if (Math.abs(aimOutY) < 0.25) aimOutY = 0;
+  }
+}
+
+function aimAssistStep(errX, errY, dt) {
+  const { w, h } = frameSize();
+  const fovR = Math.max(28, fovRadiusPx(w, h));
+  const speed = Math.max(0, Math.min(1, (cfg.aim.speed || 0) / 100));
+
+  // open-loop residual since last detect — critical anti-wobble
+  let rx = errX - aimAppliedX;
+  let ry = errY - aimAppliedY;
+  const err = Math.hypot(rx, ry);
+
+  if (err < 2.2) {
+    aimPrevErr = err;
+    aimOutX *= 0.2;
+    aimOutY *= 0.2;
     return { dx: 0, dy: 0 };
   }
 
   const t = Math.min(1, err / fovR);
-  // floor mid-FOV so it tracks instead of hanging short; still soft at edge
-  let gain = speed * (0.28 + 0.72 * Math.pow(1 - t, 1.25));
-  if (err > fovR * 0.9) gain *= 0.12;
+  // finish stronger in-FOV; residual cap stops overshoot
+  let gain = speed * (0.32 + 0.68 * (1 - t) * (1 - t));
+  if (err < fovR * 0.4) gain = Math.max(gain, speed * 0.55);
+  if (err > fovR * 0.88) gain *= 0.12;
 
-  const closing = aimPrevErr - err;
-  if (err > aimPrevErr + 5.5 || now < aimAwayUntil) {
-    // looking away — don't yank back (short freeze; jitter shouldn't stall finish)
-    if (err > aimPrevErr + 5.5) aimAwayUntil = now + 50;
-    gain = 0;
-  } else if (closing > 9) {
-    // user already flicking toward target — only finish, don't double
-    gain *= 0.72;
-  }
-  // soft land: bleed gain when close + closing so we don't overshoot bone
-  if (err < fovR * 0.28 && closing > 1.5) {
-    gain *= 0.5 + 0.5 * (err / (fovR * 0.28));
+  if (aimPrevErr > 0.5) {
+    const closing = aimPrevErr - err;
+    if (err > aimPrevErr + 8) gain *= 0.12;
+    else if (closing > 12) gain *= 0.7;
   }
   aimPrevErr = err;
 
-  let dx = errX * gain;
-  let dy = errY * gain;
+  let dx = rx * Math.min(1, Math.max(0, gain));
+  let dy = ry * Math.min(1, Math.max(0, gain));
 
-  const maxStep = 9 + speed * 14; // ~9–23 px/tick
+  const maxStep = (300 + speed * 520) * Math.max(0.004, Math.min(0.04, dt));
   const step = Math.hypot(dx, dy);
   if (step > maxStep) {
     const s = maxStep / step;
@@ -1128,36 +1138,44 @@ function aimAssistMove(errX, errY) {
     dy *= s;
   }
 
-  // snappier EMA — laggy 0.65/0.35 caused late catch-up overshoot
-  aimOutX = aimOutX * 0.4 + dx * 0.6;
-  aimOutY = aimOutY * 0.4 + dy * 0.6;
+  aimOutX = aimOutX * 0.28 + dx * 0.72;
+  aimOutY = aimOutY * 0.28 + dy * 0.72;
 
-  if (Math.abs(aimOutX) < 0.25) aimOutX = 0;
-  if (Math.abs(aimOutY) < 0.25) aimOutY = 0;
+  const out = Math.hypot(aimOutX, aimOutY);
+  if (out > err) {
+    aimOutX *= err / out;
+    aimOutY *= err / out;
+  }
+  if (Math.abs(aimOutX) < 0.28) aimOutX = 0;
+  if (Math.abs(aimOutY) < 0.28) aimOutY = 0;
 
   return { dx: aimOutX, dy: aimOutY };
 }
 
-/** Apply assist toward current lock (detect or stale liveAim). */
+/** Apply assist toward current lock (detect or rAF between inferences). */
 function tickAimAssist() {
   if (!aimActive() || !lastTarget || !detectionOn() || !serialConnected()) {
-    aimOutX *= 0.7;
-    aimOutY *= 0.7;
+    aimOutX *= 0.5;
+    aimOutY *= 0.5;
     return;
   }
+  const now = performance.now();
+  const dt = aimLastTickAt ? (now - aimLastTickAt) / 1000 : 0.016;
+  aimLastTickAt = now;
+
   const { w, h } = frameSize();
-  const live = liveAim();
+  const live = liveAim(now);
   const { x: cx, y: cy } = aimOrigin(w, h);
-  const ageSec = Math.min(0.05, Math.max(0, (performance.now() - detectSentAt) / 1000));
-  const ax = (live?.x ?? lastTarget.x) + trackVx * ageSec * 0.55;
+  // liveAim already coasts — don't stack a second prediction (that caused buja)
+  const ax = live?.x ?? lastTarget.x;
   const ay =
-    (live?.y ?? lastTarget.y) +
-    trackVy * ageSec * 0.55 +
-    (cfg.aim.ignoreY ? 0 : cfg.aim.offset);
-  let errX = ax - cx;
-  let errY = cfg.aim.ignoreY ? 0 : ay - cy;
-  const { dx, dy } = aimAssistMove(errX, errY);
+    (live?.y ?? lastTarget.y) + (cfg.aim.ignoreY ? 0 : cfg.aim.offset);
+  const errX = ax - cx;
+  const errY = cfg.aim.ignoreY ? 0 : ay - cy;
+  const { dx, dy } = aimAssistStep(errX, errY, dt);
   if (dx === 0 && dy === 0) return;
+  aimAppliedX += dx;
+  aimAppliedY += dy;
   void sendMove(hidDevice, dx, dy);
 }
 
@@ -1692,6 +1710,7 @@ function applyDetectResult(data) {
     }
     lastTarget = smoothTarget;
     lastDetectAt = now;
+    resetAimAssist(true);
     if (now - lastStatusAt > 60) {
       lastStatusAt = now;
       const extra =
@@ -1726,6 +1745,7 @@ function applyDetectResult(data) {
       rawPrev = null;
       trigHystOn = false;
       trigPrevDist = Infinity;
+      resetAimAssist(false);
       targetStatus.textContent = warn || (matchCount ? `seek (${matchCount})` : "—");
     } else if (workerKind === "ai") {
       // still holding boxes; line may go null briefly without killing trigger age
@@ -1734,11 +1754,10 @@ function applyDetectResult(data) {
     }
   }
 
-  if (aimActive() && lastTarget && detectionOn() && serialConnected()) {
-    tickAimAssist();
-  } else {
-    aimOutX *= 0.7;
-    aimOutY *= 0.7;
+  // detect only refreshes lock; moves happen in rAF (residual accounting)
+  if (!(aimActive() && lastTarget && detectionOn() && serialConnected())) {
+    aimOutX *= 0.5;
+    aimOutY *= 0.5;
   }
 
   tickTriggerbot();
@@ -2068,12 +2087,11 @@ function loop() {
     frames = 0;
     fpsTimer = now;
   }
-  // finish between inferences when detect is stale (smoother than AI-only ticks)
+  // single path: rAF consumes residual; detect only refreshes error via resetAimAssist
   if (
     aimActive() &&
     lastTarget &&
     lastDetectAt &&
-    now - lastDetectAt > 18 &&
     now - lastDetectAt < 220
   ) {
     tickAimAssist();
