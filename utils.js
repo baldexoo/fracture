@@ -20,9 +20,9 @@ export const DEFAULTS = {
     enabled: false,
     type: "hold",
     key: "KeyX",
-    delay: 10,
-    hitRadius: 10,
-    tapInterval: 280, // ms between single taps (pestka, not spray)
+    delay: 0, // unused — instant on crosshair
+    hitRadius: 8,
+    tapInterval: 280,
     prediction: 0, // legacy
   },
   canvasScale: 0.5,

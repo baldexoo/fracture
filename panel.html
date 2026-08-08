@@ -162,24 +162,13 @@
               </div>
               <div class="stack">
                 <div class="label-row">
-                  <span>delay (ms)</span>
-                  <span id="trigDelayLabel">40</span>
-                </div>
-                <div class="slider-wrap" data-slider="trigDelay">
-                  <div class="slider-fill"></div>
-                  <div class="slider-value">40</div>
-                  <input type="range" id="trigDelay" min="0" max="250" value="40" />
-                </div>
-              </div>
-              <div class="stack">
-                <div class="label-row">
                   <span>hit radius</span>
-                  <span id="trigHitLabel">10</span>
+                  <span id="trigHitLabel">8</span>
                 </div>
                 <div class="slider-wrap" data-slider="trigHit">
                   <div class="slider-fill"></div>
-                  <div class="slider-value">10</div>
-                  <input type="range" id="trigHit" min="4" max="40" value="10" />
+                  <div class="slider-value">8</div>
+                  <input type="range" id="trigHit" min="2" max="24" value="8" />
                 </div>
               </div>
               <div class="stack">
@@ -194,8 +183,8 @@
                 </div>
               </div>
               <p style="margin:10px 0 0;color:#666;font-size:11px;text-transform:lowercase;line-height:1.35">
-                pestka: pojedyncze LMB z odstępem (tap interval), nie spray.
-                delay = reakcja przed pierwszym strzałem. hit radius nisko przy strafe.
+                instant: jak celownik na wrogu → od razu jeden LMB (bez delay).
+                tap interval = tylko odstęp między pestkami, nie reakcja.
               </p>
             </div>
           </div>
@@ -304,6 +293,6 @@
 
     <div id="magnifier"><canvas id="magnifierCanvas" width="120" height="120"></canvas></div>
 
-    <script type="module" src="./app.js?v=trig8"></script>
+    <script type="module" src="./app.js?v=trig9"></script>
   </body>
 </html>

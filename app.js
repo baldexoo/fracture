@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=trig8";
+} from "./utils.js?v=trig9";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -16,10 +16,10 @@ import {
   serialConnected,
   serialSupported,
   testClick,
-} from "./hid.js?v=trig8";
-import { createOverlay } from "./overlay.js?v=trig8";
-import { createAudioRadar } from "./audio-radar.js?v=trig8";
-import { openToolWindow } from "./popout.js?v=trig8";
+} from "./hid.js?v=trig9";
+import { createOverlay } from "./overlay.js?v=trig9";
+import { createAudioRadar } from "./audio-radar.js?v=trig9";
+import { openToolWindow } from "./popout.js?v=trig9";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -175,10 +175,8 @@ const els = {
   trigEnabled: document.getElementById("trigEnabled"),
   trigType: document.getElementById("trigType"),
   trigKey: document.getElementById("trigKey"),
-  trigDelay: document.getElementById("trigDelay"),
   trigHit: document.getElementById("trigHit"),
   trigTap: document.getElementById("trigTap"),
-  trigDelayLabel: document.getElementById("trigDelayLabel"),
   trigHitLabel: document.getElementById("trigHitLabel"),
   trigTapLabel: document.getElementById("trigTapLabel"),
   visOverlay: document.getElementById("visOverlay"),
@@ -212,10 +210,8 @@ function writeCfgToUi() {
   if (!els.trigKey.querySelector(`option[value="${els.trigKey.value}"]`)) {
     els.trigKey.value = "KeyX";
   }
-  els.trigDelay.value = cfg.triggerbot.delay ?? 10;
-  els.trigHit.value = cfg.triggerbot.hitRadius ?? 10;
+  els.trigHit.value = cfg.triggerbot.hitRadius ?? 8;
   if (els.trigTap) els.trigTap.value = cfg.triggerbot.tapInterval ?? 280;
-  if (els.trigDelayLabel) els.trigDelayLabel.textContent = String(els.trigDelay.value);
   if (els.trigHitLabel) els.trigHitLabel.textContent = String(els.trigHit.value);
   if (els.trigTapLabel) els.trigTapLabel.textContent = String(els.trigTap?.value ?? 280);
   els.visOverlay.checked = cfg.visuals.detectionOverlay;
@@ -248,10 +244,9 @@ function readUiToCfg() {
   cfg.triggerbot.enabled = els.trigEnabled.checked;
   cfg.triggerbot.type = els.trigType.value;
   cfg.triggerbot.key = els.trigKey.value;
-  cfg.triggerbot.delay = Number(els.trigDelay.value);
+  cfg.triggerbot.delay = 0;
   cfg.triggerbot.hitRadius = Number(els.trigHit.value);
   cfg.triggerbot.tapInterval = Number(els.trigTap?.value ?? 280);
-  if (els.trigDelayLabel) els.trigDelayLabel.textContent = String(cfg.triggerbot.delay);
   if (els.trigHitLabel) els.trigHitLabel.textContent = String(cfg.triggerbot.hitRadius);
   if (els.trigTapLabel) els.trigTapLabel.textContent = String(cfg.triggerbot.tapInterval);
   cfg.visuals.detectionOverlay = els.visOverlay.checked;
@@ -1076,16 +1071,16 @@ function csCrosshairOnEnemy() {
   const now = performance.now();
   // capture→infer lag already in detectSentAt; boxes timestamped on result
   const ageMs = now - hitBoxesAt;
-  if (ageMs > 70) return false; // too old — enemy likely strafed off
+  // allow slightly fresher window — peek shots need the latest det, not waiting
+  if (ageMs > 55) return false;
 
   const ageSec = ageMs / 1000;
-  // push box with raw track velocity so we test where enemy is NOW, not in the old frame
   const ex = trackVx * ageSec;
   const ey = trackVy * ageSec;
 
   const cx = w * 0.5;
   const cy = h * 0.5;
-  const pad = cfg.triggerbot.hitRadius ?? 14;
+  const pad = cfg.triggerbot.hitRadius ?? 8;
 
   for (const raw of list) {
     const box = triggerVolume(raw);
@@ -1117,14 +1112,7 @@ function tickTriggerbot() {
     return;
   }
   const now = performance.now();
-  if (!csCrosshairOnEnemy()) {
-    trigOnSince = 0;
-    return;
-  }
-  if (!trigOnSince) trigOnSince = now;
-  const delay = cfg.triggerbot.delay ?? 40;
-  if (now - trigOnSince < delay) return;
-  // final check right before click (delay window can go stale)
+  // instant: no reaction delay — fire the frame crosshair is on enemy
   if (!csCrosshairOnEnemy()) {
     trigOnSince = 0;
     return;
