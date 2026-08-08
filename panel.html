@@ -183,9 +183,9 @@
                 </div>
               </div>
               <p style="margin:10px 0 0;color:#666;font-size:11px;text-transform:lowercase;line-height:1.35">
-                cyan kółko = hit radius wokół środka share (celownik).
-                różowy/zielony punkt = bone z AI (zielony = w radiusie → strzał).
-                status trig pokazuje dystans w px. bez extrapolacji (peek nie strzela wcześnie).
+                trigger = punkt trackingu (kreska). przy ucieczce z celownika przewiduje pozycję TERAZ
+                (nie strzela late). przy peeku bez leadu (nie early). max świeżość detu 28ms.
+                status: FIRE / leave / dystans px.
               </p>
             </div>
           </div>
@@ -294,6 +294,6 @@
 
     <div id="magnifier"><canvas id="magnifierCanvas" width="120" height="120"></canvas></div>
 
-    <script type="module" src="./app.js?v=track2"></script>
+    <script type="module" src="./app.js?v=track3"></script>
   </body>
 </html>

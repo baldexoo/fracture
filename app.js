@@ -4,7 +4,7 @@ import {
   rgbToHsv,
   hsvToRgb,
   clamp,
-} from "./utils.js?v=track2";
+} from "./utils.js?v=track3";
 import {
   requireSessionOrRedirect,
   getSession,
@@ -16,10 +16,10 @@ import {
   serialConnected,
   serialSupported,
   testClick,
-} from "./hid.js?v=track2";
-import { createOverlay } from "./overlay.js?v=track2";
-import { createAudioRadar } from "./audio-radar.js?v=track2";
-import { openToolWindow } from "./popout.js?v=track2";
+} from "./hid.js?v=track3";
+import { createOverlay } from "./overlay.js?v=track3";
+import { createAudioRadar } from "./audio-radar.js?v=track3";
+import { openToolWindow } from "./popout.js?v=track3";
 
 if (!requireSessionOrRedirect()) {
   /* redirected */
@@ -1029,7 +1029,8 @@ function updateTrigStatus() {
   if (cfg.triggerbot.type === "always") {
     const p = triggerBestPoint();
     const r = cfg.triggerbot.hitRadius ?? 8;
-    if (p && p.dist <= r) trigStatus.textContent = `FIRE ${p.dist | 0}px`;
+    if (p?.veto) trigStatus.textContent = "leave";
+    else if (p && p.dist <= r) trigStatus.textContent = `FIRE ${p.dist | 0}px`;
     else if (p) trigStatus.textContent = `${p.dist | 0}px`;
     else trigStatus.textContent = "always";
     return;
@@ -1041,7 +1042,8 @@ function updateTrigStatus() {
   {
     const p = triggerBestPoint();
     const r = cfg.triggerbot.hitRadius ?? 8;
-    if (p && p.dist <= r) trigStatus.textContent = `FIRE ${p.dist | 0}px`;
+    if (p?.veto) trigStatus.textContent = "leave";
+    else if (p && p.dist <= r) trigStatus.textContent = `FIRE ${p.dist | 0}px`;
     else if (p) trigStatus.textContent = `KEY↓ ${p.dist | 0}px`;
     else trigStatus.textContent = "KEY↓";
   }
@@ -1077,45 +1079,86 @@ function triggerAimPoint(b) {
   return { x, y };
 }
 
-/** Closest bone point to CS crosshair (no velocity extrapolate — that fired early on peeks). */
+/**
+ * Trigger aim point = same as tracking line (lastTarget), else box bone.
+ * Leaving-only extrapolate: if enemy flees crosshair, push point to NOW so we
+ * don't click after they're already off. Approaching peeks: no forward push
+ * (that caused early shots).
+ */
 function triggerBestPoint() {
   const { w, h } = frameSize();
-  if (!w || !h || !hitBoxesAt) return null;
-  const ageMs = performance.now() - hitBoxesAt;
-  if (ageMs > 50) return null;
-
-  const list = lastHitBoxes.length
-    ? lastHitBoxes
-    : lastHitBox
-      ? [lastHitBox]
-      : [];
-  if (!list.length) return null;
+  if (!w || !h) return null;
+  const now = performance.now();
+  const ageMs = hitBoxesAt ? now - hitBoxesAt : 999;
+  // stale det → don't trust "still on" (that's the late-shot bug)
+  if (ageMs > 28) return null;
 
   const cx = w * 0.5;
   const cy = h * 0.5;
-  const wantHead = (cfg.aim.bone || "head") !== "body";
 
-  let best = null;
-  let bestDist = Infinity;
-  for (const raw of list) {
-    // skip wrong bone class when the other exists
-    if (wantHead && !raw.head && list.some((b) => b.head)) continue;
-    if (!wantHead && raw.head && list.some((b) => !b.head)) continue;
-    const p = triggerAimPoint(raw);
-    const dx = p.x - cx;
-    const dy = cfg.aim.ignoreY ? 0 : p.y - cy;
-    const dist = Math.hypot(dx, dy);
-    if (dist < bestDist) {
-      bestDist = dist;
-      best = { x: p.x, y: p.y, dist, cx, cy };
+  let x;
+  let y;
+  if (lastTarget) {
+    x = lastTarget.x;
+    y = lastTarget.y;
+  } else {
+    const list = lastHitBoxes.length
+      ? lastHitBoxes
+      : lastHitBox
+        ? [lastHitBox]
+        : [];
+    if (!list.length) return null;
+    const wantHead = (cfg.aim.bone || "head") !== "body";
+    let best = null;
+    let bestDist = Infinity;
+    for (const raw of list) {
+      if (wantHead && !raw.head && list.some((b) => b.head)) continue;
+      if (!wantHead && raw.head && list.some((b) => !b.head)) continue;
+      const p = triggerAimPoint(raw);
+      const d = Math.hypot(p.x - cx, cfg.aim.ignoreY ? 0 : p.y - cy);
+      if (d < bestDist) {
+        bestDist = d;
+        best = p;
+      }
     }
+    if (!best) return null;
+    x = best.x;
+    y = best.y;
   }
-  return best;
+
+  const dx0 = x - cx;
+  const dy0 = cfg.aim.ignoreY ? 0 : y - cy;
+  const dist0 = Math.hypot(dx0, dy0);
+  const ageSec = ageMs / 1000;
+
+  // radial leave speed (px/s): >0 = fleeing center
+  let leave = 0;
+  if (dist0 > 1) {
+    leave = (trackVx * dx0 + trackVy * dy0) / dist0;
+  }
+
+  let px = x;
+  let py = y;
+  if (leave > 80) {
+    // already leaving — predict where they are NOW (blocks late click)
+    px = x + trackVx * ageSec;
+    py = y + trackVy * ageSec;
+  }
+  // approaching / static: keep raw point (no early peek lead)
+
+  const dx = px - cx;
+  const dy = cfg.aim.ignoreY ? 0 : py - cy;
+  const dist = Math.hypot(dx, dy);
+
+  // hard veto: fleeing fast past the reticle
+  if (leave > 700 && dist0 > 2) return { x: px, y: py, dist, cx, cy, leave, veto: true };
+
+  return { x: px, y: py, dist, cx, cy, leave, veto: false };
 }
 
 function csCrosshairOnEnemy() {
   const p = triggerBestPoint();
-  if (!p) return false;
+  if (!p || p.veto) return false;
   const r = Math.max(1, cfg.triggerbot.hitRadius ?? 8);
   return p.dist <= r;
 }
@@ -1134,6 +1177,11 @@ function tickTriggerbot() {
   const tap = Math.max(120, cfg.triggerbot.tapInterval ?? 280);
   if (now - lastTriggerAt < tap) return;
   if (!serialConnected()) return;
+  // last-chance recheck after tap wait window
+  if (!csCrosshairOnEnemy()) {
+    trigOnSince = 0;
+    return;
+  }
   lastTriggerAt = now;
   void sendClick(hidDevice, 1);
 }
